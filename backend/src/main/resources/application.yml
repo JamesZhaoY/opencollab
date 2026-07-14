@@ -1,0 +1,49 @@
+server:
+  port: 8000
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: opencollab-backend
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:excel_collab}?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: ${DB_USER:root}
+    password: ${DB_PASSWORD:password}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.opencollab.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+
+jwt:
+  secret: ${JWT_SECRET:change-this-secret-key-in-production}
+  expiration: 900000
+  refresh-expiration: 604800000
+
+app:
+  allowed-origins: ${APP_ALLOWED_ORIGINS:http://localhost:5173}
+  upload-dir: ${UPLOAD_DIR:./uploads}
+
+logging:
+  level:
+    com.opencollab: INFO
+    org.springframework.security: INFO
