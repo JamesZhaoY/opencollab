@@ -1,13 +1,15 @@
-import { useEffect, useLayoutEffect, useState, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { gsap } from 'gsap';
 import { useFileStore } from '@/stores/fileStore';
 import Navbar from '@/components/Navbar';
 import CreateModal from '@/components/CreateModal';
+import Toast, { type ToastData } from '@/components/Toast';
 import type { FileItem } from '@/types';
 
 type Tab = 'owned' | 'shared' | 'trashed';
 type DocFilter = 'all' | 'excel' | 'word' | 'markdown';
+type SortKey = 'updated_desc' | 'updated_asc' | 'name_asc' | 'name_desc';
 type DeleteIntent = { kind: 'trash' | 'permanent'; file: FileItem } | null;
 type UploadFeedback = { tone: 'loading' | 'error'; text: string } | null;
 
@@ -33,11 +35,18 @@ function getFilePresentation(documentType?: string) {
 }
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleDateString('zh-CN', {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value || '-';
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  });
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(date);
 }
 
 export default function FileListPage() {
@@ -62,8 +71,30 @@ export default function FileListPage() {
   const deletedFiles = Array.isArray(trashedFiles) ? trashedFiles : [];
 
   const [tab, setTab] = useState<Tab>('owned');
-  const [docFilter, setDocFilter] = useState<DocFilter>('all');
+  const [selectedTypes, setSelectedTypes] = useState<Array<'excel' | 'word' | 'markdown'>>(() => {
+    try {
+      const saved = localStorage.getItem('opencollab-doc-types');
+      if (saved) {
+        const parsed = JSON.parse(saved) as string[];
+        return parsed.filter((x): x is 'excel' | 'word' | 'markdown' => x === 'excel' || x === 'word' || x === 'markdown');
+      }
+    } catch {}
+    const legacy = localStorage.getItem('opencollab-doc-filter');
+    if (legacy === 'excel' || legacy === 'word' || legacy === 'markdown') return [legacy];
+    return [];
+  });
+  const [sortKey, setSortKey] = useState<SortKey>(() => {
+    const saved = localStorage.getItem('opencollab-sort-key');
+    return saved === 'updated_desc' || saved === 'updated_asc' || saved === 'name_asc' || saved === 'name_desc' ? saved : 'updated_desc';
+  });
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+  const sortMenuRef = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState('');
+  const [toast, setToast] = useState<ToastData | null>(null);
+
+  const toggleTypeFilter = (type: 'excel' | 'word' | 'markdown') => {
+    setSelectedTypes((prev) => prev.includes(type) ? prev.filter((x) => x !== type) : [...prev, type]);
+  };
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [deleteIntent, setDeleteIntent] = useState<DeleteIntent>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -96,8 +127,51 @@ export default function FileListPage() {
     }
   }, [tab, fetchFiles, fetchSharedFiles, fetchTrashedFiles]);
 
+  useEffect(() => {
+    localStorage.setItem('opencollab-doc-types', JSON.stringify(selectedTypes));
+  }, [selectedTypes]);
+
+  useEffect(() => {
+    localStorage.setItem('opencollab-sort-key', sortKey);
+  }, [sortKey]);
+
+  useEffect(() => {
+    if (!sortMenuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!sortMenuRef.current?.contains(event.target as Node)) {
+        setSortMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSortMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [sortMenuOpen]);
+
+  const sortOptions: Array<{ value: SortKey; label: string }> = useMemo(() => ([
+    { value: 'updated_desc', label: '最近修改' },
+    { value: 'updated_asc', label: '最早修改' },
+    { value: 'name_asc', label: '名称 A-Z' },
+    { value: 'name_desc', label: '名称 Z-A' },
+  ]), []);
+  const currentSortLabel = sortOptions.find((item) => item.value === sortKey)?.label ?? '最近修改';
+
   const handleCreate = async (name: string, description?: string) => {
-    await createFile(name, description);
+    try {
+      const created = await createFile(name, description);
+      setToast({ tone: 'success', text: `「${created.name}」已创建` });
+      setSelectedFile(created);
+      navigate(`/editor/${created.id}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '创建失败，请稍后重试';
+      setToast({ tone: 'error', text: message });
+      throw err instanceof Error ? err : new Error(message);
+    }
   };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -105,23 +179,27 @@ export default function FileListPage() {
     if (!file) return;
     const ext = '.' + file.name.split('.').pop()?.toLowerCase();
     if (!allowedExtensions.includes(ext)) {
-      alert('仅支持上传 Word / Markdown / Excel 文件（.docx / .md / .xlsx / .xls / .csv / .txt）');
+      setToast({ tone: 'error', text: '仅支持 Word / Markdown / Excel 文件' });
       e.target.value = '';
       return;
     }
     if (file.size > 50 * 1024 * 1024) {
-      alert('文件大小不能超过 50MB');
+      setToast({ tone: 'error', text: '文件大小不能超过 50MB' });
       e.target.value = '';
       return;
     }
     setUploadFeedback({ tone: 'loading', text: `正在导入「${file.name}」` });
+    setToast({ tone: 'loading', text: `正在导入「${file.name}」` });
     try {
       const uploaded = ext === '.docx' ? await uploadWordDocx(file) : await uploadFile(file);
       setSelectedFile(uploaded);
+      setToast({ tone: 'success', text: `「${uploaded.name}」导入成功` });
+      setUploadFeedback(null);
       navigate(`/editor/${uploaded.id}`);
     } catch (err) {
       console.error('文件导入失败：', err);
       setUploadFeedback({ tone: 'error', text: '文件导入失败，请确认文件没有损坏后重试' });
+      setToast({ tone: 'error', text: '文件导入失败，请稍后重试' });
     } finally {
       e.target.value = '';
     }
@@ -133,7 +211,12 @@ export default function FileListPage() {
   };
 
   const handleRestore = async (id: number) => {
-    await restoreFile(id);
+    try {
+      await restoreFile(id);
+      setToast({ tone: 'success', text: '文件已恢复' });
+    } catch {
+      setToast({ tone: 'error', text: '恢复失败，请稍后重试' });
+    }
   };
 
   const handlePermanentDelete = async (id: number) => {
@@ -150,6 +233,7 @@ export default function FileListPage() {
       } else {
         await permanentDeleteFile(deleteIntent.file.id);
       }
+      setToast({ tone: 'success', text: deleteIntent.kind === 'permanent' ? '文件已永久删除' : '文件已移入回收站' });
       setDeleteIntent(null);
     } finally {
       setIsDeleting(false);
@@ -157,7 +241,14 @@ export default function FileListPage() {
   };
 
   const handleDownload = async (id: number, name: string) => {
-    await downloadFile(id, name);
+    try {
+      setToast({ tone: 'loading', text: `正在下载「${name}」` });
+      await downloadFile(id, name);
+      setToast({ tone: 'success', text: `「${name}」下载完成` });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '下载失败，请稍后重试';
+      setToast({ tone: 'error', text: message });
+    }
   };
 
   const activeFiles = tab === 'owned'
@@ -176,13 +267,24 @@ export default function FileListPage() {
     { all: 0, excel: 0, word: 0, markdown: 0 },
   );
 
-  const displayedFiles = (activeFiles ?? []).filter((f) => {
-    const displayName = getDisplayFileName(f.name).toLowerCase();
-    const searchText = search.toLowerCase();
-    const matchesSearch = displayName.includes(searchText) || f.name.toLowerCase().includes(searchText);
-    const matchesType = docFilter === 'all' || f.document_type === docFilter;
-    return matchesSearch && matchesType;
-  });
+  const displayedFiles = (activeFiles ?? [])
+    .filter((f) => {
+      const displayName = getDisplayFileName(f.name).toLowerCase();
+      const searchText = search.toLowerCase();
+      const matchesSearch = displayName.includes(searchText) || f.name.toLowerCase().includes(searchText);
+      const matchesType = selectedTypes.length === 0 || selectedTypes.includes(f.document_type as 'excel' | 'word' | 'markdown');
+      return matchesSearch && matchesType;
+    })
+    .slice()
+    .sort((a, b) => {
+      if (sortKey === 'name_asc' || sortKey === 'name_desc') {
+        const an = getDisplayFileName(a.name).localeCompare(getDisplayFileName(b.name), 'zh-CN');
+        return sortKey === 'name_asc' ? an : -an;
+      }
+      const at = new Date(a.updated_at).getTime();
+      const bt = new Date(b.updated_at).getTime();
+      return sortKey === 'updated_asc' ? at - bt : bt - at;
+    });
 
   const emptyText = tab === 'trashed'
     ? '回收站为空'
@@ -195,7 +297,9 @@ export default function FileListPage() {
     : tab === 'shared'
       ? `其他用户分享给你的文件，共 ${incomingSharedFiles.length} 个。`
       : `仅显示你创建文件的回收信息，共 ${deletedFiles.length} 个。`;
-  const currentFilterLabel = docFilter === 'all' ? '全部类型' : getFilePresentation(docFilter).label;
+  const currentFilterLabel = selectedTypes.length === 0
+    ? '全部类型'
+    : selectedTypes.map((type) => getFilePresentation(type).label).join(' / ');
   const visibleSummary = `${displayedFiles.length} / ${activeFiles.length}`;
 
   return (
@@ -206,7 +310,7 @@ export default function FileListPage() {
           <aside className="workbench-sidebar">
             <div className="side-brand">
               <span>OpenCollab</span>
-              <strong>Files</strong>
+              <strong>文件</strong>
             </div>
             <p className="side-title">空间</p>
             <button className={`side-item ${tab === 'owned' ? 'active' : ''}`} onClick={() => setTab('owned')}>
@@ -222,20 +326,20 @@ export default function FileListPage() {
               <strong>{deletedFiles.length}</strong>
             </button>
 
-            <p className="side-title side-title-spaced">类型</p>
-            <button className={`side-static ${docFilter === 'all' ? 'active' : ''}`} onClick={() => setDocFilter('all')}>
+            <p className="side-title side-title-spaced">类型（可多选）</p>
+            <button className={`side-static ${selectedTypes.length === 0 ? 'active' : ''}`} onClick={() => setSelectedTypes([])}>
               <span>全部类型</span>
               <strong>{typeCounts.all}</strong>
             </button>
-            <button className={`side-static ${docFilter === 'excel' ? 'active' : ''}`} onClick={() => setDocFilter('excel')}>
+            <button className={`side-static ${selectedTypes.includes('excel') ? 'active' : ''}`} onClick={() => toggleTypeFilter('excel')}>
               <span>Excel</span>
               <strong>{typeCounts.excel}</strong>
             </button>
-            <button className={`side-static ${docFilter === 'word' ? 'active' : ''}`} onClick={() => setDocFilter('word')}>
+            <button className={`side-static ${selectedTypes.includes('word') ? 'active' : ''}`} onClick={() => toggleTypeFilter('word')}>
               <span>Word</span>
               <strong>{typeCounts.word}</strong>
             </button>
-            <button className={`side-static ${docFilter === 'markdown' ? 'active' : ''}`} onClick={() => setDocFilter('markdown')}>
+            <button className={`side-static ${selectedTypes.includes('markdown') ? 'active' : ''}`} onClick={() => toggleTypeFilter('markdown')}>
               <span>Markdown</span>
               <strong>{typeCounts.markdown}</strong>
             </button>
@@ -254,8 +358,9 @@ export default function FileListPage() {
                 <p>{pageDescription}</p>
               </div>
               <div className="filelist-actions">
-                <button className="btn-action primary" onClick={() => setShowCreateModal(true)}>
-                  新建
+                <button className="btn-action primary create-action" onClick={() => setShowCreateModal(true)}>
+                  <span className="create-action-plus" aria-hidden="true">+</span>
+                  新建文件
                 </button>
                 <button
                   className="btn-action"
@@ -313,16 +418,89 @@ export default function FileListPage() {
                 <strong>{currentFilterLabel}</strong>
                 {search && <em>搜索：{search}</em>}
               </div>
+              <div className={`sort-select${sortMenuOpen ? ' open' : ''}`} ref={sortMenuRef}>
+                <span className="sort-select-label">排序</span>
+                <button
+                  type="button"
+                  className="sort-select-trigger"
+                  aria-haspopup="listbox"
+                  aria-expanded={sortMenuOpen}
+                  aria-label="文件排序"
+                  onClick={() => setSortMenuOpen((open) => !open)}
+                >
+                  <span>{currentSortLabel}</span>
+                  <span className="sort-select-caret" aria-hidden="true">▾</span>
+                </button>
+                {sortMenuOpen && (
+                  <div className="sort-select-menu" role="listbox" aria-label="排序方式">
+                    {sortOptions.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="option"
+                        aria-selected={sortKey === option.value}
+                        className={`sort-select-option${sortKey === option.value ? ' active' : ''}`}
+                        onClick={() => {
+                          setSortKey(option.value);
+                          setSortMenuOpen(false);
+                        }}
+                      >
+                        <span>{option.label}</span>
+                        {sortKey === option.value && <span className="sort-select-check" aria-hidden="true">✓</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             {loading ? (
-              <div className="loading-panel" aria-live="polite">
-                <span className="loader-mark" />
-                <span className="loading-title">正在加载文件</span>
-                <span className="loading-subtitle">同步列表与权限状态</span>
+              <div className="file-table skeleton-table" aria-live="polite" aria-label="正在加载文件">
+                <div className="file-row header">
+                  <div>类型</div>
+                  <div>文件名</div>
+                  <div>权限</div>
+                  <div>修改时间</div>
+                  <div>操作</div>
+                </div>
+                {Array.from({ length: 5 }).map((_, idx) => (
+                  <div className="file-row skeleton-row" key={idx}>
+                    <div className="skeleton-block icon" />
+                    <div className="skeleton-lines">
+                      <span className="skeleton-block line wide" />
+                      <span className="skeleton-block line" />
+                    </div>
+                    <div className="skeleton-block pill" />
+                    <div className="skeleton-block line short" />
+                    <div className="skeleton-actions">
+                      <span className="skeleton-block btn" />
+                      <span className="skeleton-block btn" />
+                    </div>
+                  </div>
+                ))}
               </div>
             ) : displayedFiles.length === 0 ? (
-              <p className="empty-state">{search ? `${pageTitle}中没有匹配文件` : emptyText}</p>
+              <div className="empty-state empty-state-card">
+                <strong>{search ? `${pageTitle}中没有匹配文件` : emptyText}</strong>
+                <p>
+                  {search
+                    ? '试试更换关键词，或切换左侧类型筛选。'
+                    : tab === 'trashed'
+                      ? '删除的文件会出现在这里，可恢复或永久删除。'
+                      : tab === 'shared'
+                        ? '当有人把文件分享给你时，会显示在这里。'
+                        : '创建第一个文档，或上传现有 Word / Markdown / Excel 文件。'}
+                </p>
+                {!search && tab === 'owned' && (
+                  <div className="empty-state-actions">
+                    <button className="btn-action primary create-action" onClick={() => setShowCreateModal(true)}>
+                      <span className="create-action-plus" aria-hidden="true">+</span>
+                      新建文件
+                    </button>
+                    <button className="btn-action" onClick={() => fileInputRef.current?.click()}>上传文件</button>
+                  </div>
+                )}
+              </div>
             ) : (
               <div className="file-table">
                 <div className="file-row header">
@@ -359,7 +537,6 @@ export default function FileListPage() {
                         </span>
                       </div>
                       <div className="file-meta">
-                        <span>{isTrashed ? '删除于' : '修改于'}</span>
                         <strong>{formatDate(file.updated_at)}</strong>
                       </div>
                       <div className="inline-actions" onClick={(e) => e.stopPropagation()}>
@@ -395,6 +572,7 @@ export default function FileListPage() {
         </div>
       </div>
 
+      <Toast toast={toast} onClose={() => setToast(null)} />
       {showCreateModal && (
         <CreateModal
           title="新建文件"
@@ -441,7 +619,7 @@ function DeleteConfirmModal({ intent, isDeleting, onCancel, onConfirm }: DeleteC
           <div className="delete-file-summary">
             <span className="delete-file-name">{getDisplayFileName(intent.file.name)}</span>
             <span className="delete-file-meta">
-              修改于 {new Date(intent.file.updated_at).toLocaleDateString('zh-CN')}
+              {formatDate(intent.file.updated_at)}
             </span>
           </div>
         </div>
