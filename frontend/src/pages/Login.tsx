@@ -1,7 +1,8 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { gsap } from 'gsap';
 import { useAuthStore } from '@/stores/authStore';
+import { applyTheme, getStoredTheme, resolveTheme, toggleTheme, type ThemeMode } from '@/utils/theme';
 
 function getLoginErrorMessage(err: unknown) {
   if (err instanceof Error && 'response' in err) {
@@ -48,6 +49,11 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [theme, setTheme] = useState<ThemeMode>(() => resolveTheme(getStoredTheme()));
+
+  useEffect(() => {
+    applyTheme(theme);
+  }, [theme]);
   const shellRef = useRef<HTMLElement>(null);
   const passwordStrength = getPasswordStrength(password);
   const shouldShowEmailHint = isRegister && email.length > 0;
@@ -97,18 +103,27 @@ export default function LoginPage() {
 
   return (
     <div className="login-page">
+      <button
+        type="button"
+        className="theme-toggle login-theme-toggle"
+        onClick={() => setTheme(toggleTheme())}
+        aria-label={theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
+        title={theme === 'dark' ? '浅色模式' : '深色模式'}
+      >
+        {theme === 'dark' ? '浅色' : '深色'}
+      </button>
       <section className="login-shell" aria-label="OpenCollab 登录" ref={shellRef}>
         <div className="login-hero">
           <div className="login-brand-row">
             <div className="brand-icon">OC</div>
             <div>
               <div className="login-brand-name">OpenCollab</div>
-              <div className="login-credit">by Author Yang</div>
+              <div className="login-credit">Author Yang</div>
             </div>
           </div>
 
           <div className="login-hero-copy">
-            <p className="login-eyebrow">TEAM DOCUMENT WORKSPACE</p>
+            <p className="login-eyebrow">团队文档工作台</p>
             <h1>文档协作，一个工作台就够。</h1>
             <p>
               Word、Markdown、Excel 在线编辑，权限隔离、在线人员和评论协作集中管理。

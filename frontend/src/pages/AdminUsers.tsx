@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import Navbar from '@/components/Navbar';
+import Toast, { type ToastData } from '@/components/Toast';
 import api from '@/services/api';
 import type { User } from '@/types';
 
@@ -7,7 +8,18 @@ type ResetTarget = User | null;
 
 function formatDate(value?: string) {
   if (!value) return '-';
-  return new Date(value).toLocaleString('zh-CN');
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(date);
 }
 
 function getErrorMessage(err: unknown) {
@@ -26,6 +38,7 @@ export default function AdminUsersPage() {
   const [newPassword, setNewPassword] = useState('');
   const [resetError, setResetError] = useState('');
   const [resetting, setResetting] = useState(false);
+  const [toast, setToast] = useState<ToastData | null>(null);
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -56,6 +69,7 @@ export default function AdminUsersPage() {
       await api.post(`/admin/users/${resetTarget.id}/reset-password`, {
         new_password: newPassword,
       });
+      setToast({ tone: 'success', text: `已重置「${resetTarget.username}」的密码` });
       setResetTarget(null);
       setNewPassword('');
     } catch (err) {
@@ -67,6 +81,7 @@ export default function AdminUsersPage() {
 
   return (
     <>
+      <Toast toast={toast} onClose={() => setToast(null)} />
       <Navbar />
       <main className="admin-page">
         <section className="admin-panel">
@@ -83,9 +98,28 @@ export default function AdminUsersPage() {
           {error && <div className="form-error">{error}</div>}
 
           {loading ? (
-            <div className="loading-panel">
-              <span className="loader-mark" />
-              <span className="loading-title">正在加载用户</span>
+            <div className="admin-table skeleton-table" aria-label="正在加载用户">
+              <div className="admin-row header">
+                <div>用户</div>
+                <div>角色</div>
+                <div>部门</div>
+                <div>状态</div>
+                <div>创建时间</div>
+                <div>操作</div>
+              </div>
+              {Array.from({ length: 5 }).map((_, idx) => (
+                <div className="admin-row skeleton-row" key={idx}>
+                  <div className="skeleton-lines">
+                    <span className="skeleton-block line wide" />
+                    <span className="skeleton-block line" />
+                  </div>
+                  <div className="skeleton-block pill" />
+                  <div className="skeleton-block line short" />
+                  <div className="skeleton-block pill" />
+                  <div className="skeleton-block line short" />
+                  <div className="skeleton-block btn" />
+                </div>
+              ))}
             </div>
           ) : (
             <div className="admin-table">

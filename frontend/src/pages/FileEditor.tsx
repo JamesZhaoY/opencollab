@@ -21,6 +21,7 @@ import CanvasEditor, {
 import type { Comment, FileVersion, Permission as PermissionType } from '@/types';
 import { authFetch } from '@/services/authFetch';
 import { parseWorkbookSnapshot, workbookToPersistedSheets } from '@/utils/univerAdapter';
+import { applyTheme, getStoredTheme, resolveTheme, toggleTheme, type ThemeMode } from '@/utils/theme';
 
 function formatShanghaiDate(value: string) {
   const date = new Date(value);
@@ -321,6 +322,38 @@ export default function FileEditorPage() {
   const [commentLoadError, setCommentLoadError] = useState('');
   const [selectedCellRef, setSelectedCellRef] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  const [theme, setTheme] = useState<ThemeMode>(() => resolveTheme(getStoredTheme()));
+  const [downloadHint, setDownloadHint] = useState('');
+  const [markdownLayout, setMarkdownLayout] = useState<'split' | 'edit' | 'preview'>(() => {
+    const saved = localStorage.getItem('opencollab-md-layout');
+    return saved === 'edit' || saved === 'preview' || saved === 'split' ? saved : 'split';
+  });
+  const [markdownSplitRatio, setMarkdownSplitRatio] = useState(() => {
+    const saved = Number(localStorage.getItem('opencollab-md-split') || '0.5');
+    return Number.isFinite(saved) ? Math.min(0.75, Math.max(0.25, saved)) : 0.5;
+  });
+  const markdownSplitRef = useRef<HTMLDivElement>(null);
+  const draggingSplitRef = useRef(false);
+  useEffect(() => { applyTheme(theme); }, [theme]);
+  useEffect(() => { localStorage.setItem('opencollab-md-layout', markdownLayout); }, [markdownLayout]);
+  useEffect(() => { localStorage.setItem('opencollab-md-split', String(markdownSplitRatio)); }, [markdownSplitRatio]);
+
+  useEffect(() => {
+    const onMove = (event: PointerEvent) => {
+      if (!draggingSplitRef.current || !markdownSplitRef.current) return;
+      const rect = markdownSplitRef.current.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const next = (event.clientX - rect.left) / rect.width;
+      setMarkdownSplitRatio(Math.min(0.75, Math.max(0.25, next)));
+    };
+    const onUp = () => { draggingSplitRef.current = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+  }, []);
   const [showPermissions, setShowPermissions] = useState(false);
   const [permissions, setPermissions] = useState<PermissionType[]>([]);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
@@ -885,16 +918,26 @@ export default function FileEditorPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileId]);
 
-  const handleDownload = () => {
-    if (selectedFile) {
+  const handleDownload = async () => {
+    if (!selectedFile) return;
+    try {
+      setDownloadHint('导出中...');
       if (documentType === 'word') {
         const command = canvasEditorRef.current?.command as DocxCommand | undefined;
         if (command?.executeExportDocx) {
           command.executeExportDocx({ fileName: selectedFile.name });
+          setDownloadHint('已导出 Word');
+          window.setTimeout(() => setDownloadHint(''), 1800);
           return;
         }
       }
-      downloadFile(selectedFile.id, selectedFile.name);
+      await downloadFile(selectedFile.id, selectedFile.name);
+      setDownloadHint('下载完成');
+      window.setTimeout(() => setDownloadHint(''), 1800);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '下载失败';
+      setDownloadHint(message);
+      window.setTimeout(() => setDownloadHint(''), 2400);
     }
   };
 
@@ -1190,12 +1233,21 @@ export default function FileEditorPage() {
             {saveStatus !== 'idle' && (
               <span className={`save-status ${saveStatus}`}>
                 {saveStatus === 'saving' && '保存中...'}
-                {saveStatus === 'saved' && '已保存'}
+                {saveStatus === 'saved' && '已同步保存'}
                 {saveStatus === 'error' && '保存失败'}
               </span>
             )}
           </div>
           <div className="toolbar-right">
+            <button
+              type="button"
+              className="theme-toggle editor-theme-toggle"
+              onClick={() => setTheme(toggleTheme())}
+              aria-label={theme === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
+              title={theme === 'dark' ? '浅色模式' : '深色模式'}
+            >
+              {theme === 'dark' ? '浅色' : '深色'}
+            </button>
             <div className="collaborators">
               <span className="online-label">
                 {isSynced ? `在线 ${onlineCollaborators.length}` : '连接中'}
@@ -1210,7 +1262,8 @@ export default function FileEditorPage() {
                   ))}
               </div>
             </div>
-            <button className="btn-tb" onClick={handleDownload} disabled={wordPluginBusy}>
+            {downloadHint && <span className="download-hint">{downloadHint}</span>}
+            <button className="btn-tb" onClick={handleDownload} disabled={wordPluginBusy || downloadHint === '导出中...'}>
               {documentType === 'word' ? '导出 Word' : '下载'}
             </button>
             <button
@@ -1256,17 +1309,53 @@ export default function FileEditorPage() {
             ) : isMarkdownFile ? (
               <div className="document-workspace">
                 {renderDocumentToolbar()}
-                <div className="markdown-workspace">
-                <textarea
-                  ref={markdownTextAreaRef}
-                  className={`markdown-source ${!canEditFile ? 'readonly' : ''}`}
-                  value={textContent}
-                  onChange={(e) => handleTextChange(e.target.value)}
-                  readOnly={!canEditFile}
-                  spellCheck={false}
-                  placeholder="# 标题&#10;&#10;开始编写 Markdown..."
-                />
-                <MarkdownPreview value={textContent} />
+                <div className="markdown-layout-bar">
+                  <div className="markdown-layout-tabs" role="tablist" aria-label="Markdown 布局">
+                    <button type="button" className={`markdown-layout-tab ${markdownLayout === 'edit' ? 'active' : ''}`} onClick={() => setMarkdownLayout('edit')}>只编辑</button>
+                    <button type="button" className={`markdown-layout-tab ${markdownLayout === 'split' ? 'active' : ''}`} onClick={() => setMarkdownLayout('split')}>双栏</button>
+                    <button type="button" className={`markdown-layout-tab ${markdownLayout === 'preview' ? 'active' : ''}`} onClick={() => setMarkdownLayout('preview')}>只预览</button>
+                  </div>
+                  <span className="markdown-layout-hint">{markdownLayout === 'split' ? '拖拽中间分隔条可调整宽度' : '可随时切换布局模式'}</span>
+                </div>
+                <div
+                  className={`markdown-workspace layout-${markdownLayout}`}
+                  ref={markdownSplitRef}
+                  style={markdownLayout === 'split' ? { gridTemplateColumns: `minmax(240px, ${markdownSplitRatio}fr) 10px minmax(240px, ${1 - markdownSplitRatio}fr)` } : undefined}
+                >
+                  {(markdownLayout === 'split' || markdownLayout === 'edit') && (
+                    <div className="markdown-pane">
+                      <div className="markdown-pane-label">编辑<span>Markdown</span></div>
+                      <textarea
+                        ref={markdownTextAreaRef}
+                        className={`markdown-source ${!canEditFile ? 'readonly' : ''}`}
+                        value={textContent}
+                        onChange={(e) => handleTextChange(e.target.value)}
+                        readOnly={!canEditFile}
+                        spellCheck={false}
+                        placeholder="# 标题&#10;&#10;开始编写 Markdown..."
+                      />
+                    </div>
+                  )}
+                  {markdownLayout === 'split' && (
+                    <div
+                      className="markdown-resizer"
+                      role="separator"
+                      aria-orientation="vertical"
+                      aria-label="拖拽调整编辑与预览宽度"
+                      onPointerDown={(event) => {
+                        event.preventDefault();
+                        draggingSplitRef.current = true;
+                        document.body.style.cursor = 'col-resize';
+                        document.body.style.userSelect = 'none';
+                      }}
+                    />
+                  )}
+                  {(markdownLayout === 'split' || markdownLayout === 'preview') && (
+                    <div className="markdown-pane">
+                      <div className="markdown-pane-label">预览<span>实时渲染</span></div>
+                      <MarkdownPreview value={textContent} />
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (

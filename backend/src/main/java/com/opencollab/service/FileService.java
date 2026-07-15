@@ -520,7 +520,9 @@ public class FileService {
             if (sheetDataJson != null && !sheetDataJson.isEmpty() && !sheetDataJson.equals("{}")) {
                 try {
                     JsonNode root = objectMapper.readTree(sheetDataJson);
-                    if (isLuckysheetSnapshot(root)) {
+                    if (isUniverWorkbook(root)) {
+                        writeUniverWorkbook(workbook, root);
+                    } else if (isLuckysheetSnapshot(root)) {
                         for (JsonNode sourceSheet : root) {
                             writeLuckysheetSheet(workbook, sourceSheet);
                         }
@@ -533,11 +535,7 @@ public class FileService {
                             if (rowNode.isArray()) {
                                 for (JsonNode cellNode : rowNode) {
                                     Cell cell = row.createCell(c++);
-                                    if (cellNode.isNumber()) {
-                                        cell.setCellValue(cellNode.asDouble());
-                                    } else {
-                                        cell.setCellValue(cellNode.asText(""));
-                                    }
+                                    writeCellValue(cell, cellNode);
                                 }
                             }
                         }
@@ -551,7 +549,8 @@ public class FileService {
                     Row row = sheet.createRow(0);
                     row.createCell(0).setCellValue(sheetDataJson);
                 }
-            } else {
+            }
+            if (workbook.getNumberOfSheets() == 0) {
                 workbook.createSheet("Sheet1");
             }
             workbook.write(out);
@@ -559,8 +558,125 @@ public class FileService {
         }
     }
 
+    private boolean isUniverWorkbook(JsonNode root) {
+        return root != null && root.isObject() && root.has("sheets") && root.get("sheets").isObject();
+    }
+
     private boolean isLuckysheetSnapshot(JsonNode root) {
         return root.isArray() && root.size() > 0 && root.get(0).has("celldata");
+    }
+
+    private void writeUniverWorkbook(Workbook workbook, JsonNode root) {
+        JsonNode sheetsNode = root.path("sheets");
+        JsonNode orderNode = root.path("sheetOrder");
+        List<String> order = new ArrayList<>();
+        if (orderNode.isArray()) {
+            for (JsonNode item : orderNode) {
+                if (item.isTextual()) order.add(item.asText());
+            }
+        }
+        if (order.isEmpty()) {
+            Iterator<String> names = sheetsNode.fieldNames();
+            while (names.hasNext()) order.add(names.next());
+        }
+        Set<String> usedNames = new HashSet<>();
+        for (String sheetId : order) {
+            JsonNode sourceSheet = sheetsNode.path(sheetId);
+            if (sourceSheet.isMissingNode() || sourceSheet.isNull()) continue;
+            String rawName = sourceSheet.path("name").asText(sheetId);
+            if (rawName == null || rawName.trim().isEmpty()) rawName = "Sheet1";
+            String name = uniqueSheetName(rawName, usedNames);
+            usedNames.add(name.toLowerCase(Locale.ROOT));
+            Sheet sheet = workbook.createSheet(name);
+            writeUniverSheet(sheet, sourceSheet.path("cellData"));
+        }
+    }
+
+    private void writeUniverSheet(Sheet sheet, JsonNode cellData) {
+        if (cellData == null || !cellData.isObject()) return;
+        Iterator<Map.Entry<String, JsonNode>> rows = cellData.fields();
+        while (rows.hasNext()) {
+            Map.Entry<String, JsonNode> rowEntry = rows.next();
+            int rowIndex;
+            try {
+                rowIndex = Integer.parseInt(rowEntry.getKey());
+            } catch (NumberFormatException ex) {
+                continue;
+            }
+            if (rowIndex < 0) continue;
+            JsonNode cols = rowEntry.getValue();
+            if (cols == null || !cols.isObject()) continue;
+            Row row = sheet.getRow(rowIndex);
+            if (row == null) row = sheet.createRow(rowIndex);
+            Iterator<Map.Entry<String, JsonNode>> colIt = cols.fields();
+            while (colIt.hasNext()) {
+                Map.Entry<String, JsonNode> colEntry = colIt.next();
+                int colIndex;
+                try {
+                    colIndex = Integer.parseInt(colEntry.getKey());
+                } catch (NumberFormatException ex) {
+                    continue;
+                }
+                if (colIndex < 0) continue;
+                Cell cell = row.getCell(colIndex);
+                if (cell == null) cell = row.createCell(colIndex);
+                writeUniverCell(cell, colEntry.getValue());
+            }
+        }
+    }
+
+    private void writeUniverCell(Cell cell, JsonNode cellNode) {
+        if (cellNode == null || cellNode.isNull()) {
+            cell.setBlank();
+            return;
+        }
+        // Univer cell shape: { v, t, f, p, ... }
+        JsonNode value = cellNode.has("v") ? cellNode.get("v") : cellNode;
+        if (value != null && value.isObject() && value.has("v")) {
+            value = value.get("v");
+        }
+        writeCellValue(cell, value);
+    }
+
+    private void writeCellValue(Cell cell, JsonNode value) {
+        if (value == null || value.isNull()) {
+            cell.setBlank();
+            return;
+        }
+        if (value.isNumber()) {
+            cell.setCellValue(value.asDouble());
+            return;
+        }
+        if (value.isBoolean()) {
+            cell.setCellValue(value.asBoolean());
+            return;
+        }
+        String text = value.asText("");
+        // Prefer numeric parsing for plain number strings.
+        if (!text.isEmpty()) {
+            try {
+                if (text.matches("^-?\\d+(\\.\\d+)?$")) {
+                    cell.setCellValue(Double.parseDouble(text));
+                    return;
+                }
+            } catch (Exception ignored) {
+                // fall through
+            }
+        }
+        cell.setCellValue(text);
+    }
+
+    private String uniqueSheetName(String rawName, Set<String> usedNames) {
+        String base = rawName.length() > 31 ? rawName.substring(0, 31) : rawName;
+        String candidate = base;
+        int i = 1;
+        while (usedNames.contains(candidate.toLowerCase(Locale.ROOT))) {
+            String suffix = "(" + i + ")";
+            int max = Math.max(1, 31 - suffix.length());
+            candidate = (base.length() > max ? base.substring(0, max) : base) + suffix;
+            i++;
+        }
+        return candidate;
     }
 
     private void writeLuckysheetSheet(Workbook workbook, JsonNode sourceSheet) {
@@ -574,13 +690,10 @@ public class FileService {
             if (row == null) row = sheet.createRow(rowIndex);
             Cell cell = row.createCell(columnIndex);
             JsonNode value = sourceCell.path("v");
-            if (value.isNumber()) {
-                cell.setCellValue(value.asDouble());
-            } else if (value.isBoolean()) {
-                cell.setCellValue(value.asBoolean());
-            } else {
-                cell.setCellValue(value.asText(""));
+            if (value.isObject() && value.has("v")) {
+                value = value.get("v");
             }
+            writeCellValue(cell, value);
         }
     }
 

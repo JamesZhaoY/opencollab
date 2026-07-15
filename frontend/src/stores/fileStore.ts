@@ -133,10 +133,43 @@ export const useFileStore = create<FileState>((set) => ({
 
   downloadFile: async (id: number, name: string) => {
     const resp = await api.get(`/files/${id}/download`, { responseType: 'blob' });
-    const url = window.URL.createObjectURL(new Blob([resp.data]));
+    const blob: Blob = resp.data;
+    const rawContentType = resp.headers['content-type'];
+    const contentType = String(Array.isArray(rawContentType) ? rawContentType[0] : (rawContentType || blob.type || '')).toLowerCase();
+
+    // Backend error payloads may arrive as JSON blobs.
+    if (contentType.includes('application/json') || contentType.includes('text/plain')) {
+      const text = await blob.text();
+      try {
+        const parsed = JSON.parse(text) as { detail?: string; message?: string };
+        throw new Error(parsed.detail || parsed.message || '下载失败');
+      } catch (err) {
+        if (err instanceof Error && err.message !== '下载失败' && !err.message.includes('JSON')) {
+          throw err;
+        }
+        throw new Error(text || '下载失败');
+      }
+    }
+
+    const disposition = String(resp.headers['content-disposition'] || '');
+    let filename = name;
+    const utfMatch = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    const plainMatch = disposition.match(/filename="?([^";]+)"?/i);
+    if (utfMatch?.[1]) {
+      try { filename = decodeURIComponent(utfMatch[1]); } catch { filename = utfMatch[1]; }
+    } else if (plainMatch?.[1]) {
+      filename = plainMatch[1];
+    }
+
+    // Ensure excel extension when server returns spreadsheet payload.
+    if (contentType.includes('spreadsheet') && !/\.(xlsx|xls)$/i.test(filename)) {
+      filename = `${filename}.xlsx`;
+    }
+
+    const url = window.URL.createObjectURL(new Blob([blob], { type: contentType || blob.type || 'application/octet-stream' }));
     const a = document.createElement('a');
     a.href = url;
-    a.download = name;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
