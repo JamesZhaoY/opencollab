@@ -77,11 +77,20 @@ export const useFileStore = create<FileState>((set) => ({
       headers: { 'Content-Type': 'multipart/form-data' },
     });
     const fileItem = resp.data as FileItem;
-    const arrayBuffer = await file.arrayBuffer();
-    sessionStorage.setItem(`pending_docx_import:${fileItem.id}`, JSON.stringify({
-      name: file.name,
-      buffer: Array.from(new Uint8Array(arrayBuffer)),
-    }));
+    // The server already persists a plain-text fallback. Keep a small local
+    // copy only to let the editor preserve richer DOCX formatting immediately
+    // after upload, without making successful uploads depend on sessionStorage.
+    if (file.size <= 3 * 1024 * 1024) {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        sessionStorage.setItem(`pending_docx_import:${fileItem.id}`, JSON.stringify({
+          name: file.name,
+          buffer: Array.from(new Uint8Array(arrayBuffer)),
+        }));
+      } catch (err) {
+        console.warn('无法缓存 Word 文件的格式信息，将使用已导入的文本内容：', err);
+      }
+    }
     set((state) => ({ files: [...state.files, fileItem] }));
     return fileItem;
   },

@@ -14,15 +14,19 @@ import com.opencollab.mapper.PermissionMapper;
 import com.opencollab.mapper.UserMapper;
 import org.apache.commons.codec.binary.Base64;
 import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.DataFormatter;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -134,11 +138,11 @@ public class FileService {
             file.setSheetData(text);
             file.setContent(text);
         } else if ("excel".equals(type)) {
-            // Store empty placeholder; full POI parse is best-effort
-            file.setSheetData("{}");
+            file.setSheetData(importSpreadsheet(bytes, original));
         } else if ("word".equals(type)) {
-            // Frontend re-imports DOCX client-side; keep empty content
-            file.setSheetData("[]");
+            String text = extractWordText(bytes);
+            file.setSheetData(text);
+            file.setContent(text);
         } else {
             file.setContent(Base64.encodeBase64String(bytes));
         }
@@ -391,14 +395,137 @@ public class FileService {
                 .collect(Collectors.toMap(User::getId, u -> u, (a, b) -> a));
     }
 
+    /**
+     * Converts uploaded spreadsheets to the compact Luckysheet-compatible shape
+     * already understood by the Univer adapter in the web client. Storing that
+     * snapshot at upload time prevents a newly uploaded file from opening as an
+     * empty worksheet.
+     */
+    private String importSpreadsheet(byte[] bytes, String filename) throws IOException {
+        if (filename.toLowerCase(Locale.ROOT).endsWith(".csv")) {
+            return objectMapper.writeValueAsString(Collections.singletonList(
+                    createSheetSnapshot("Sheet1", csvRows(new String(bytes, StandardCharsets.UTF_8)))));
+        }
+
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(bytes))) {
+            DataFormatter formatter = new DataFormatter(Locale.SIMPLIFIED_CHINESE);
+            List<Map<String, Object>> snapshots = new ArrayList<>();
+            for (int sheetIndex = 0; sheetIndex < workbook.getNumberOfSheets(); sheetIndex++) {
+                Sheet sheet = workbook.getSheetAt(sheetIndex);
+                List<List<String>> rows = new ArrayList<>();
+                int maxColumns = 0;
+                for (int rowIndex = 0; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
+                    Row row = sheet.getRow(rowIndex);
+                    List<String> values = new ArrayList<>();
+                    int lastCell = row == null ? 0 : Math.max(row.getLastCellNum(), 0);
+                    maxColumns = Math.max(maxColumns, lastCell);
+                    for (int columnIndex = 0; columnIndex < lastCell; columnIndex++) {
+                        Cell cell = row.getCell(columnIndex, Row.MissingCellPolicy.RETURN_BLANK_AS_NULL);
+                        values.add(cell == null ? "" : formatter.formatCellValue(cell));
+                    }
+                    rows.add(values);
+                }
+                Map<String, Object> snapshot = createSheetSnapshot(sheet.getSheetName(), rows);
+                snapshot.put("column", Math.max(26, maxColumns));
+                snapshots.add(snapshot);
+            }
+            if (snapshots.isEmpty()) {
+                snapshots.add(createSheetSnapshot("Sheet1", Collections.<List<String>>emptyList()));
+            }
+            return objectMapper.writeValueAsString(snapshots);
+        } catch (Exception e) {
+            throw new IOException("Excel 文件解析失败，请确认文件格式是否正确", e);
+        }
+    }
+
+    private Map<String, Object> createSheetSnapshot(String name, List<List<String>> rows) {
+        Map<String, Object> sheet = new LinkedHashMap<>();
+        List<Map<String, Object>> cells = new ArrayList<>();
+        int maxColumns = 0;
+        for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+            List<String> row = rows.get(rowIndex);
+            maxColumns = Math.max(maxColumns, row.size());
+            for (int columnIndex = 0; columnIndex < row.size(); columnIndex++) {
+                String value = row.get(columnIndex);
+                if (value == null || value.isEmpty()) continue;
+                Map<String, Object> cell = new LinkedHashMap<>();
+                cell.put("r", rowIndex);
+                cell.put("c", columnIndex);
+                cell.put("v", value);
+                cells.add(cell);
+            }
+        }
+        sheet.put("name", name == null || name.trim().isEmpty() ? "Sheet1" : name);
+        sheet.put("row", Math.max(100, rows.size()));
+        sheet.put("column", Math.max(26, maxColumns));
+        sheet.put("celldata", cells);
+        return sheet;
+    }
+
+    private List<List<String>> csvRows(String text) {
+        String normalized = text != null && text.startsWith("\uFEFF") ? text.substring(1) : text;
+        List<List<String>> rows = new ArrayList<>();
+        for (String line : (normalized == null ? "" : normalized).split("\\r?\\n", -1)) {
+            if (line.isEmpty() && rows.isEmpty()) continue;
+            rows.add(parseCsvLine(line));
+        }
+        return rows;
+    }
+
+    private List<String> parseCsvLine(String line) {
+        List<String> values = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean quoted = false;
+        for (int index = 0; index < line.length(); index++) {
+            char ch = line.charAt(index);
+            if (ch == '"') {
+                if (quoted && index + 1 < line.length() && line.charAt(index + 1) == '"') {
+                    current.append(ch);
+                    index++;
+                } else {
+                    quoted = !quoted;
+                }
+            } else if (ch == ',' && !quoted) {
+                values.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(ch);
+            }
+        }
+        values.add(current.toString());
+        return values;
+    }
+
+    private String extractWordText(byte[] bytes) throws IOException {
+        try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            List<String> blocks = new ArrayList<>();
+            document.getParagraphs().forEach(paragraph -> {
+                String text = paragraph.getText();
+                if (text != null && !text.trim().isEmpty()) blocks.add(text);
+            });
+            document.getTables().forEach(table -> table.getRows().forEach(row -> {
+                List<String> cells = row.getTableCells().stream()
+                        .map(cell -> cell.getText() == null ? "" : cell.getText().trim())
+                        .collect(Collectors.toList());
+                if (!cells.isEmpty()) blocks.add(String.join("\t", cells));
+            }));
+            return String.join("\n", blocks);
+        } catch (Exception e) {
+            throw new IOException("Word 文件解析失败，请确认文件格式是否正确", e);
+        }
+    }
+
     private byte[] buildMinimalXlsx(String sheetDataJson) throws IOException {
         try (Workbook workbook = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            Sheet sheet = workbook.createSheet("Sheet1");
             if (sheetDataJson != null && !sheetDataJson.isEmpty() && !sheetDataJson.equals("{}")) {
                 try {
                     JsonNode root = objectMapper.readTree(sheetDataJson);
-                    // Best-effort: if it's a simple 2d array
-                    if (root.isArray()) {
+                    if (isLuckysheetSnapshot(root)) {
+                        for (JsonNode sourceSheet : root) {
+                            writeLuckysheetSheet(workbook, sourceSheet);
+                        }
+                    } else if (root.isArray()) {
+                        Sheet sheet = workbook.createSheet("Sheet1");
                         int r = 0;
                         for (JsonNode rowNode : root) {
                             Row row = sheet.createRow(r++);
@@ -414,14 +541,46 @@ public class FileService {
                                 }
                             }
                         }
+                    } else {
+                        Sheet sheet = workbook.createSheet("Sheet1");
+                        Row row = sheet.createRow(0);
+                        row.createCell(0).setCellValue(sheetDataJson);
                     }
                 } catch (Exception ignored) {
+                    Sheet sheet = workbook.createSheet("Sheet1");
                     Row row = sheet.createRow(0);
                     row.createCell(0).setCellValue(sheetDataJson);
                 }
+            } else {
+                workbook.createSheet("Sheet1");
             }
             workbook.write(out);
             return out.toByteArray();
+        }
+    }
+
+    private boolean isLuckysheetSnapshot(JsonNode root) {
+        return root.isArray() && root.size() > 0 && root.get(0).has("celldata");
+    }
+
+    private void writeLuckysheetSheet(Workbook workbook, JsonNode sourceSheet) {
+        String name = sourceSheet.path("name").asText("Sheet1");
+        Sheet sheet = workbook.createSheet(name.isEmpty() ? "Sheet1" : name);
+        for (JsonNode sourceCell : sourceSheet.path("celldata")) {
+            int rowIndex = sourceCell.path("r").asInt(-1);
+            int columnIndex = sourceCell.path("c").asInt(-1);
+            if (rowIndex < 0 || columnIndex < 0) continue;
+            Row row = sheet.getRow(rowIndex);
+            if (row == null) row = sheet.createRow(rowIndex);
+            Cell cell = row.createCell(columnIndex);
+            JsonNode value = sourceCell.path("v");
+            if (value.isNumber()) {
+                cell.setCellValue(value.asDouble());
+            } else if (value.isBoolean()) {
+                cell.setCellValue(value.asBoolean());
+            } else {
+                cell.setCellValue(value.asText(""));
+            }
         }
     }
 

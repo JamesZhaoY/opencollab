@@ -1,5 +1,6 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useLayoutEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { gsap } from 'gsap';
 import { useFileStore } from '@/stores/fileStore';
 import Navbar from '@/components/Navbar';
 import CreateModal from '@/components/CreateModal';
@@ -8,6 +9,7 @@ import type { FileItem } from '@/types';
 type Tab = 'owned' | 'shared' | 'trashed';
 type DocFilter = 'all' | 'excel' | 'word' | 'markdown';
 type DeleteIntent = { kind: 'trash' | 'permanent'; file: FileItem } | null;
+type UploadFeedback = { tone: 'loading' | 'error'; text: string } | null;
 
 const allowedExtensions = ['.xlsx', '.xls', '.csv', '.md', '.markdown', '.txt', '.docx'];
 const displayExtensions = ['.xlsx', '.xls', '.csv', '.md', '.markdown', '.txt', '.docx'];
@@ -65,7 +67,24 @@ export default function FileListPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [deleteIntent, setDeleteIntent] = useState<DeleteIntent>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [uploadFeedback, setUploadFeedback] = useState<UploadFeedback>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const pageRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const root = pageRef.current;
+    if (!root) return;
+    const media = gsap.matchMedia();
+    media.add('(prefers-reduced-motion: no-preference)', () => {
+      const sidebar = root.querySelector('.workbench-sidebar');
+      const content = root.querySelectorAll('.filelist-topbar, .filelist-metrics, .workbench-controls, .file-table, .empty-state, .loading-panel');
+      const intro = gsap.timeline({ defaults: { ease: 'power3.out' } });
+      if (sidebar) intro.from(sidebar, { autoAlpha: 0, x: -16, duration: 0.42 });
+      if (content.length) intro.from(content, { autoAlpha: 0, y: 14, duration: 0.38, stagger: 0.07 }, sidebar ? '-=0.2' : 0);
+      return () => intro.kill();
+    });
+    return () => media.revert();
+  }, []);
 
   useEffect(() => {
     if (tab === 'owned') {
@@ -95,12 +114,17 @@ export default function FileListPage() {
       e.target.value = '';
       return;
     }
-    const uploaded = ext === '.docx' ? await uploadWordDocx(file) : await uploadFile(file);
-    if (uploaded.document_type === 'word') {
+    setUploadFeedback({ tone: 'loading', text: `正在导入「${file.name}」` });
+    try {
+      const uploaded = ext === '.docx' ? await uploadWordDocx(file) : await uploadFile(file);
       setSelectedFile(uploaded);
       navigate(`/editor/${uploaded.id}`);
+    } catch (err) {
+      console.error('文件导入失败：', err);
+      setUploadFeedback({ tone: 'error', text: '文件导入失败，请确认文件没有损坏后重试' });
+    } finally {
+      e.target.value = '';
     }
-    e.target.value = '';
   };
 
   const handleDelete = async (id: number) => {
@@ -177,7 +201,7 @@ export default function FileListPage() {
   return (
     <>
       <Navbar />
-      <div className="filelist-page workbench-page">
+      <div className="filelist-page workbench-page" ref={pageRef}>
         <div className="workbench-shell">
           <aside className="workbench-sidebar">
             <div className="side-brand">
@@ -233,8 +257,12 @@ export default function FileListPage() {
                 <button className="btn-action primary" onClick={() => setShowCreateModal(true)}>
                   新建
                 </button>
-                <button className="btn-action" onClick={() => fileInputRef.current?.click()}>
-                  上传文件
+                <button
+                  className="btn-action"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploadFeedback?.tone === 'loading'}
+                >
+                  {uploadFeedback?.tone === 'loading' ? '导入中...' : '上传文件'}
                 </button>
                 <input
                   ref={fileInputRef}
@@ -245,6 +273,12 @@ export default function FileListPage() {
                 />
               </div>
             </div>
+
+            {uploadFeedback && (
+              <p className={`upload-feedback ${uploadFeedback.tone}`} role="status">
+                {uploadFeedback.text}
+              </p>
+            )}
 
             <div className="filelist-metrics" aria-label="文件概览">
               <div>

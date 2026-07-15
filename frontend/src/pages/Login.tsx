@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { gsap } from 'gsap';
 import { useAuthStore } from '@/stores/authStore';
 
 function getLoginErrorMessage(err: unknown) {
@@ -47,9 +48,25 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const shellRef = useRef<HTMLElement>(null);
   const passwordStrength = getPasswordStrength(password);
   const shouldShowEmailHint = isRegister && email.length > 0;
   const shouldShowPasswordHint = isRegister && password.length > 0;
+
+  useLayoutEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    const media = gsap.matchMedia();
+    media.add('(prefers-reduced-motion: no-preference)', () => {
+      const hero = shell.querySelector('.login-hero');
+      const card = shell.querySelector('.login-card');
+      const timeline = gsap.timeline({ defaults: { ease: 'power3.out' } });
+      if (hero) timeline.from(hero, { autoAlpha: 0, x: -22, duration: 0.5 });
+      if (card) timeline.from(card, { autoAlpha: 0, y: 18, duration: 0.42 }, hero ? '-=0.28' : 0);
+      return () => timeline.kill();
+    });
+    return () => media.revert();
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -80,7 +97,7 @@ export default function LoginPage() {
 
   return (
     <div className="login-page">
-      <section className="login-shell" aria-label="OpenCollab 登录">
+      <section className="login-shell" aria-label="OpenCollab 登录" ref={shellRef}>
         <div className="login-hero">
           <div className="login-brand-row">
             <div className="brand-icon">OC</div>
