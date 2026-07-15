@@ -9,7 +9,6 @@ import javax.validation.constraints.Size;
 @Data
 public class RegisterRequest {
     @NotBlank(message = "用户名不能为空")
-    @Size(min = 3, max = 50, message = "用户名长度应为 3 到 50 个字符")
     private String username;
 
     @NotBlank(message = "邮箱不能为空")
