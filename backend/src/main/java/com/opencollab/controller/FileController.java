@@ -96,7 +96,7 @@ public class FileController {
             return Result.success(fileService.createFile(body, userId));
         }
         if (name == null || name.trim().isEmpty()) {
-            throw new IllegalArgumentException("File name is required");
+            throw new IllegalArgumentException("文件名不能为空");
         }
         return Result.success(fileService.createFile(name, description, userId));
     }

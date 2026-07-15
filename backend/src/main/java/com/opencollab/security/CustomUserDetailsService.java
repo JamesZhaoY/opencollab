@@ -28,7 +28,7 @@ public class CustomUserDetailsService implements UserDetailsService {
         User user = userMapper.selectOne(
                 new LambdaQueryWrapper<User>().eq(User::getUsername, username));
         if (user == null) {
-            throw new UsernameNotFoundException("User not found: " + username);
+            throw new UsernameNotFoundException("用户名或密码错误");
         }
 
         return new org.springframework.security.core.userdetails.User(
@@ -54,7 +54,7 @@ public class CustomUserDetailsService implements UserDetailsService {
         User user = userMapper.selectOne(
                 new LambdaQueryWrapper<User>().eq(User::getUsername, username));
         if (user == null) {
-            throw new UsernameNotFoundException("User not found: " + username);
+            throw new UsernameNotFoundException("用户不存在");
         }
         return user;
     }

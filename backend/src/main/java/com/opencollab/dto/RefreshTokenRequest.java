@@ -5,7 +5,7 @@ import javax.validation.constraints.NotBlank;
 
 @Data
 public class RefreshTokenRequest {
-    @NotBlank(message = "Refresh token is required")
+    @NotBlank(message = "登录状态不能为空")
     private String refreshToken;
 
     public String getRefreshToken() { return refreshToken; }

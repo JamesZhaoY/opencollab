@@ -55,10 +55,10 @@ public class AuthService {
     @Transactional
     public UserResponse register(RegisterRequest request) {
         if (userMapper.selectCount(new LambdaQueryWrapper<User>().eq(User::getUsername, request.getUsername())) > 0) {
-            throw new ResourceAlreadyExistsException("Username already exists");
+            throw new ResourceAlreadyExistsException("用户名已存在");
         }
         if (userMapper.selectCount(new LambdaQueryWrapper<User>().eq(User::getEmail, request.getEmail())) > 0) {
-            throw new ResourceAlreadyExistsException("Email already exists");
+            throw new ResourceAlreadyExistsException("邮箱已被使用");
         }
 
         User user = new User();
@@ -77,12 +77,12 @@ public class AuthService {
     public TokenResponse refreshToken(String refreshToken) {
         String username = jwtTokenProvider.extractUsername(refreshToken);
         if (username == null) {
-            throw new IllegalArgumentException("Invalid refresh token");
+            throw new IllegalArgumentException("登录状态无效，请重新登录");
         }
 
         UserDetails userDetails = userDetailsService.loadUserByUsername(username);
         if (!jwtTokenProvider.validateToken(refreshToken, userDetails)) {
-            throw new IllegalArgumentException("Invalid or expired refresh token");
+            throw new IllegalArgumentException("登录状态已过期，请重新登录");
         }
 
         String newAccessToken = jwtTokenProvider.generateToken(userDetails);
@@ -98,7 +98,7 @@ public class AuthService {
     public void changePassword(String username, String oldPassword, String newPassword) {
         User user = userDetailsService.getUserByUsername(username);
         if (!passwordEncoder.matches(oldPassword, user.getPasswordHash())) {
-            throw new IllegalArgumentException("Current password is incorrect");
+            throw new IllegalArgumentException("当前密码不正确");
         }
         user.setPasswordHash(passwordEncoder.encode(newPassword));
         userMapper.updateById(user);

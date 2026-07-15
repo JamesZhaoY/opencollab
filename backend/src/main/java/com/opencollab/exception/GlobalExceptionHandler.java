@@ -2,6 +2,8 @@ package com.opencollab.exception;
 
 import com.opencollab.dto.Result;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.authentication.DisabledException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -48,12 +50,21 @@ public class GlobalExceptionHandler {
             String errorMessage = error.getDefaultMessage();
             errors.put(fieldName, errorMessage);
         });
-        return Result.failure(400, "Validation failed");
+        return Result.failure(400, "请求参数校验失败");
+    }
+
+    @ExceptionHandler(AuthenticationException.class)
+    @ResponseStatus(HttpStatus.UNAUTHORIZED)
+    public Result<Void> handleAuthenticationException(AuthenticationException ex) {
+        if (ex instanceof DisabledException) {
+            return Result.failure(401, "账号已停用，请联系管理员");
+        }
+        return Result.failure(401, "用户名或密码错误");
     }
 
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public Result<Void> handleGenericException(Exception ex, HttpServletRequest request) {
-        return Result.failure(500, "Internal server error: " + ex.getMessage());
+        return Result.failure(500, "服务器开小差了，请稍后重试");
     }
 }

@@ -22,7 +22,7 @@ public class JwtAuthenticationEntryPoint implements AuthenticationEntryPoint {
         try {
             Result<Object> result = Result.failure(
                 HttpStatus.UNAUTHORIZED.value(),
-                "Unauthorized: " + authException.getMessage()
+                "登录状态已失效，请重新登录"
             );
             response.setStatus(HttpStatus.UNAUTHORIZED.value());
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);

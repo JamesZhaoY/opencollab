@@ -6,7 +6,7 @@ import javax.validation.constraints.NotNull;
 
 @Data
 public class RevokePermissionRequest {
-    @NotNull(message = "User ID is required")
+    @NotNull(message = "用户不能为空")
     private Long userId;
 
     public Long getUserId() { return userId; }

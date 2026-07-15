@@ -7,10 +7,10 @@ import javax.validation.constraints.NotNull;
 
 @Data
 public class GrantFilePermissionRequest {
-    @NotNull(message = "User ID is required")
+    @NotNull(message = "用户不能为空")
     private Long userId;
 
-    @NotBlank(message = "Permission is required")
+    @NotBlank(message = "权限不能为空")
     private String permission;
 
     public Long getUserId() { return userId; }

@@ -92,7 +92,7 @@ public class FileService {
     public FileResponse getFileById(Long fileId, Long userId) {
         File file = requireExisting(fileId);
         if (Boolean.TRUE.equals(file.getIsDeleted()) || !hasAccess(file, userId)) {
-            throw new UnauthorizedException("You don't have permission to access this file");
+            throw new UnauthorizedException("您没有访问该文件的权限");
         }
         FileResponse response = toFileResponse(file, userId, loadUserMap(Collections.singletonList(file)));
         response.setSheetData(file.getSheetData());
@@ -150,10 +150,10 @@ public class FileService {
     public FileResponse updateFile(Long fileId, FileUpdateRequest request, Long userId) {
         File file = requireExisting(fileId);
         if (Boolean.TRUE.equals(file.getIsDeleted())) {
-            throw new ResourceNotFoundException("File not found");
+            throw new ResourceNotFoundException("文件不存在");
         }
         if (!hasWriteAccess(file, userId)) {
-            throw new UnauthorizedException("You don't have permission to edit this file");
+            throw new UnauthorizedException("您没有编辑该文件的权限");
         }
         if (request.getName() != null) {
             file.setName(request.getName());
@@ -180,7 +180,7 @@ public class FileService {
     public FileResponse saveFileContent(Long fileId, FileSaveRequest request, Long userId) {
         File file = requireExisting(fileId);
         if (Boolean.TRUE.equals(file.getIsDeleted()) || !hasWriteAccess(file, userId)) {
-            throw new UnauthorizedException("You don't have permission to edit this file");
+            throw new UnauthorizedException("您没有编辑该文件的权限");
         }
         JsonNode sheets = request.getSheets();
         String serialized;
@@ -192,7 +192,7 @@ public class FileService {
             try {
                 serialized = objectMapper.writeValueAsString(sheets);
             } catch (Exception e) {
-                throw new IllegalArgumentException("Invalid sheets payload");
+                throw new IllegalArgumentException("文档内容格式不正确");
             }
         }
         // Frontend always re-reads sheet_data after save
@@ -203,7 +203,7 @@ public class FileService {
         }
         file.setLastModifiedBy(userId);
         fileMapper.updateById(file);
-        fileVersionService.createSnapshot(file, userId, "save");
+        fileVersionService.createSnapshot(file, userId, "手动保存");
         FileResponse response = toFileResponse(file, userId, loadUserMap(Collections.singletonList(file)));
         response.setSheetData(file.getSheetData());
         return response;
@@ -213,7 +213,7 @@ public class FileService {
     public void syncYdoc(Long fileId, byte[] body, Long userId) {
         File file = requireExisting(fileId);
         if (Boolean.TRUE.equals(file.getIsDeleted()) || !hasWriteAccess(file, userId)) {
-            throw new UnauthorizedException("You don't have permission to edit this file");
+            throw new UnauthorizedException("您没有编辑该文件的权限");
         }
         file.setYdocSnapshot(Base64.encodeBase64String(body));
         file.setLastModifiedBy(userId);
@@ -224,7 +224,7 @@ public class FileService {
     public void deleteFile(Long fileId, Long userId) {
         File file = requireExisting(fileId);
         if (!file.getOwnerId().equals(userId)) {
-            throw new UnauthorizedException("Only the owner can delete this file");
+            throw new UnauthorizedException("只有文件所有者可以删除文件");
         }
         file.setIsDeleted(true);
         fileMapper.updateById(file);
@@ -234,7 +234,7 @@ public class FileService {
     public FileResponse restoreFromTrash(Long fileId, Long userId) {
         File file = requireExisting(fileId);
         if (!file.getOwnerId().equals(userId)) {
-            throw new UnauthorizedException("Only the owner can restore this file");
+            throw new UnauthorizedException("只有文件所有者可以恢复文件");
         }
         file.setIsDeleted(false);
         fileMapper.updateById(file);
@@ -245,7 +245,7 @@ public class FileService {
     public void permanentDelete(Long fileId, Long userId) {
         File file = requireExisting(fileId);
         if (!file.getOwnerId().equals(userId)) {
-            throw new UnauthorizedException("Only the owner can permanently delete this file");
+            throw new UnauthorizedException("只有文件所有者可以永久删除文件");
         }
         permissionMapper.delete(new LambdaQueryWrapper<Permission>().eq(Permission::getFileId, fileId));
         fileVersionService.deleteByFileId(fileId);
@@ -257,7 +257,7 @@ public class FileService {
     public DownloadPayload download(Long fileId, Long userId) throws IOException {
         File file = requireExisting(fileId);
         if (Boolean.TRUE.equals(file.getIsDeleted()) || !hasAccess(file, userId)) {
-            throw new UnauthorizedException("You don't have permission to access this file");
+            throw new UnauthorizedException("您没有访问该文件的权限");
         }
         String type = file.getDocumentType();
         String name = file.getName() != null ? file.getName() : "download";
@@ -279,7 +279,7 @@ public class FileService {
     public String getFileContent(Long fileId, Long userId) {
         File file = requireExisting(fileId);
         if (Boolean.TRUE.equals(file.getIsDeleted()) || !hasAccess(file, userId)) {
-            throw new UnauthorizedException("You don't have permission to access this file");
+            throw new UnauthorizedException("您没有访问该文件的权限");
         }
         if ("excel".equals(file.getDocumentType())) {
             return file.getSheetData();
@@ -291,7 +291,7 @@ public class FileService {
     public File getFileEntityById(Long fileId, Long userId) {
         File file = requireExisting(fileId);
         if (Boolean.TRUE.equals(file.getIsDeleted()) || !hasAccess(file, userId)) {
-            throw new UnauthorizedException("You don't have permission to access this file");
+            throw new UnauthorizedException("您没有访问该文件的权限");
         }
         return file;
     }
@@ -299,7 +299,7 @@ public class FileService {
     @Transactional
     public void saveFileEntity(File file, Long userId) {
         if (!hasWriteAccess(file, userId)) {
-            throw new UnauthorizedException("You don't have permission to edit this file");
+            throw new UnauthorizedException("您没有编辑该文件的权限");
         }
         file.setLastModifiedBy(userId);
         fileMapper.updateById(file);
@@ -342,7 +342,7 @@ public class FileService {
     private File requireExisting(Long fileId) {
         File file = fileMapper.selectById(fileId);
         if (file == null) {
-            throw new ResourceNotFoundException("File not found");
+            throw new ResourceNotFoundException("文件不存在");
         }
         return file;
     }

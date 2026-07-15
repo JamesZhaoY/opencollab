@@ -6,11 +6,11 @@ import javax.validation.constraints.Size;
 
 @Data
 public class ChangePasswordRequest {
-    @NotBlank(message = "Old password is required")
+    @NotBlank(message = "当前密码不能为空")
     private String oldPassword;
 
-    @NotBlank(message = "New password is required")
-    @Size(min = 6, max = 100, message = "Password must be between 6 and 100 characters")
+    @NotBlank(message = "新密码不能为空")
+    @Size(min = 6, max = 100, message = "密码长度应为 6 到 100 个字符")
     private String newPassword;
 
     public String getOldPassword() { return oldPassword; }

@@ -21,6 +21,7 @@ services:
       MYSQL_DATABASE: ${DB_NAME:-excel_collab}
       MYSQL_USER: ${DB_USER:-collab_user}
       MYSQL_PASSWORD: ${DB_PASSWORD:-collab_pass}
+      TZ: Asia/Shanghai
     ports:
       - "3306:3306"
     volumes:
@@ -50,6 +51,8 @@ services:
       REDIS_PORT: 6379
       APP_ALLOWED_ORIGINS: ${APP_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost}
       UPLOAD_DIR: /app/uploads
+      TZ: Asia/Shanghai
+      JAVA_TOOL_OPTIONS: -Duser.timezone=Asia/Shanghai
     ports:
       - "8000:8000"
     volumes:

@@ -18,9 +18,25 @@ import CanvasEditor, {
   type IEditorData,
   type IEditorResult,
 } from '@hufe921/canvas-editor';
-import type { Comment, Permission as PermissionType } from '@/types';
+import type { Comment, FileVersion, Permission as PermissionType } from '@/types';
 import { authFetch } from '@/services/authFetch';
 import { parseWorkbookSnapshot, workbookToPersistedSheets } from '@/utils/univerAdapter';
+
+function formatShanghaiDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    dateStyle: 'medium',
+    timeStyle: 'medium',
+    hour12: false,
+  }).format(date);
+}
+
+function getVersionRemark(remark: string | null) {
+  if (!remark || remark.trim().toLowerCase() === 'save') return '手动保存';
+  return remark;
+}
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 type UniverHandle = ReturnType<typeof createUniver>;
@@ -302,12 +318,18 @@ export default function FileEditorPage() {
   const [commentText, setCommentText] = useState('');
   const [editorLoading, setEditorLoading] = useState(true);
   const [comments, setComments] = useState<Comment[]>([]);
+  const [commentLoadError, setCommentLoadError] = useState('');
   const [selectedCellRef, setSelectedCellRef] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [showPermissions, setShowPermissions] = useState(false);
   const [permissions, setPermissions] = useState<PermissionType[]>([]);
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [versions, setVersions] = useState<FileVersion[]>([]);
   const [isLoadingComments, setIsLoadingComments] = useState(false);
   const [isLoadingPermissions, setIsLoadingPermissions] = useState(false);
+  const [isLoadingVersions, setIsLoadingVersions] = useState(false);
+  const [restoringVersionId, setRestoringVersionId] = useState<number | null>(null);
+  const [versionPendingRestore, setVersionPendingRestore] = useState<FileVersion | null>(null);
   const [collaborators, setCollaborators] = useState<Map<number | string, string>>(new Map());
   const [editorError, setEditorError] = useState<string | null>(null);
   const [wordPluginBusy, setWordPluginBusy] = useState(false);
@@ -371,9 +393,7 @@ export default function FileEditorPage() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ sheets: payload }),
             });
-            if (!saveResponse.ok) {
-              throw new Error(`Save failed with status ${saveResponse.status}`);
-            }
+            if (!saveResponse.ok) throw new Error('保存失败');
             const savedFile = await saveResponse.json();
             if (currentDocumentType === 'excel') {
               const collab = collabRef.current;
@@ -436,15 +456,27 @@ export default function FileEditorPage() {
     if (!showComments || !fileId || !token) return;
     let cancelled = false;
     setIsLoadingComments(true);
+    setCommentLoadError('');
     authFetch(`/api/files/${fileId}/comments`)
-      .then((r) => r.json())
+      .then(async (response) => {
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.detail || '加载评论失败');
+        }
+        return response.json();
+      })
       .then((data: Comment[]) => {
         if (!cancelled) {
           setComments(data);
           setIsLoadingComments(false);
         }
       })
-      .catch(() => setIsLoadingComments(false));
+      .catch((error) => {
+        if (!cancelled) {
+          setCommentLoadError(error instanceof Error ? error.message : '加载评论失败，请稍后重试');
+          setIsLoadingComments(false);
+        }
+      });
     return () => { cancelled = true; };
   }, [showComments, fileId, token]);
 
@@ -464,6 +496,29 @@ export default function FileEditorPage() {
       .catch(() => setIsLoadingPermissions(false));
     return () => { cancelled = true; };
   }, [showPermissions, fileId, token]);
+
+  // Load history snapshots when the version dialog opens.
+  useEffect(() => {
+    if (!showVersionHistory || !fileId || !token) return;
+    let cancelled = false;
+    setIsLoadingVersions(true);
+    authFetch(`/api/files/${fileId}/versions`)
+      .then((response) => {
+        if (!response.ok) throw new Error('加载历史版本失败');
+        return response.json();
+      })
+      .then((data: FileVersion[]) => {
+        if (!cancelled) setVersions(Array.isArray(data) ? data : []);
+      })
+      .catch((error) => {
+        console.error('加载历史版本失败:', error);
+        if (!cancelled) setVersions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingVersions(false);
+      });
+    return () => { cancelled = true; };
+  }, [showVersionHistory, fileId, token]);
 
   // Effect: setup collaboration presence.
   useEffect(() => {
@@ -1080,6 +1135,41 @@ export default function FileEditorPage() {
     }
   };
 
+  const handleRestoreVersion = (version: FileVersion) => {
+    if (!fileId || !canEditFile || restoringVersionId !== null) return;
+    setShowVersionHistory(false);
+    setVersionPendingRestore(version);
+  };
+
+  const cancelRestoreVersion = () => {
+    if (restoringVersionId !== null) return;
+    setVersionPendingRestore(null);
+    setShowVersionHistory(true);
+  };
+
+  const confirmRestoreVersion = async () => {
+    if (!fileId || !versionPendingRestore || restoringVersionId !== null) return;
+    const version = versionPendingRestore;
+    setVersionPendingRestore(null);
+    setRestoringVersionId(version.id);
+    try {
+      const response = await authFetch(`/api/files/${fileId}/versions/${version.id}/restore`, {
+        method: 'POST',
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.detail || '恢复历史版本失败');
+      }
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      // A new Yjs document must be created so an outdated in-memory state cannot
+      // overwrite the restored snapshot after the request completes.
+      window.location.reload();
+    } catch (error) {
+      window.alert('恢复历史版本失败，请稍后重试');
+      setRestoringVersionId(null);
+    }
+  };
+
   return (
     <>
       <div className="editor-page">
@@ -1087,7 +1177,7 @@ export default function FileEditorPage() {
         <div className="editor-toolbar">
           <div className="toolbar-left">
             <button className="btn-back" onClick={handleBack} title="返回文件列表">←</button>
-            <span className="file-title">{selectedFile?.name || 'Loading...'}</span>
+            <span className="file-title">{selectedFile?.name || '正在加载...'}</span>
             <span className={`doc-type-pill ${documentType}`}>{getDocumentTypeLabel(documentType)}</span>
             <span className={`permission-pill ${canEditFile ? 'editable' : 'readonly'}`}>
               {getPermissionLabel(selectedFile?.current_permission)}
@@ -1123,6 +1213,12 @@ export default function FileEditorPage() {
             <button className="btn-tb" onClick={handleDownload} disabled={wordPluginBusy}>
               {documentType === 'word' ? '导出 Word' : '下载'}
             </button>
+            <button
+              className={`btn-tb ${showVersionHistory ? 'active' : ''}`}
+              onClick={() => setShowVersionHistory(true)}
+            >
+              历史版本
+            </button>
             {canManagePermissions && (
               <button className="btn-tb" onClick={() => setShowPermissions(true)}>权限</button>
             )}
@@ -1136,7 +1232,7 @@ export default function FileEditorPage() {
         </div>
 
         {/* Main content */}
-        <div className="editor-body">
+        <div className={`editor-body ${isMarkdownFile ? 'markdown-editor-body' : ''}`}>
           <div className={`editor-main ${isExcelFile ? 'spreadsheet' : 'document-editor'}`}>
             {editorLoading && (
               <div className="editor-loading-overlay">
@@ -1185,25 +1281,28 @@ export default function FileEditorPage() {
 
           {/* Comment panel */}
           {showComments && (
-            <div className="comment-panel" id="comment-panel">
+            <aside className="comment-panel" id="comment-panel" aria-label="评论区">
               <div className="comment-panel-header">
-                评论 <span className="count">{comments.length}</span>
+                <span>评论 <span className="count">{comments.length}</span></span>
+                <button className="comment-panel-close" onClick={() => setShowComments(false)} aria-label="关闭评论区">&times;</button>
               </div>
               <div className="comment-list">
                 {isLoadingComments ? (
                   <p className="empty-comments">加载中...</p>
+                ) : commentLoadError ? (
+                  <p className="empty-comments">{commentLoadError}</p>
                 ) : comments.length === 0 ? (
                   <p className="empty-comments">暂无评论</p>
                 ) : (
                   comments.map((c) => (
                     <div key={c.id} className="comment-item">
                       <div className="ci-top">
-                        <span className="ci-user">用户 {c.user_id}</span>
+                        <span className="ci-user">{c.username || '未知用户'}</span>
                         <span className="ci-cell">{c.cell_ref || '全局'}</span>
                       </div>
                       <div className="ci-text">{c.content}</div>
                       <div className="ci-time">
-                        {new Date(c.created_at).toLocaleString('zh-CN')}
+                        {formatShanghaiDate(c.created_at)}
                       </div>
                     </div>
                   ))
@@ -1246,7 +1345,7 @@ export default function FileEditorPage() {
                   </button>
                 </div>
               </div>
-            </div>
+            </aside>
           )}
         </div>
       </div>
@@ -1268,7 +1367,126 @@ export default function FileEditorPage() {
           }}
         />
       )}
+      {showVersionHistory && (
+        <VersionHistoryModal
+          versions={versions}
+          isLoading={isLoadingVersions}
+          canRestore={canEditFile}
+          restoringVersionId={restoringVersionId}
+          onClose={() => setShowVersionHistory(false)}
+          onRestore={handleRestoreVersion}
+        />
+      )}
+      {versionPendingRestore && (
+        <RestoreVersionConfirmModal
+          version={versionPendingRestore}
+          isRestoring={restoringVersionId !== null}
+          onCancel={cancelRestoreVersion}
+          onConfirm={confirmRestoreVersion}
+        />
+      )}
     </>
+  );
+}
+
+interface VersionHistoryModalProps {
+  versions: FileVersion[];
+  isLoading: boolean;
+  canRestore: boolean;
+  restoringVersionId: number | null;
+  onClose: () => void;
+  onRestore: (version: FileVersion) => void;
+}
+
+function VersionHistoryModal({
+  versions,
+  isLoading,
+  canRestore,
+  restoringVersionId,
+  onClose,
+  onRestore,
+}: VersionHistoryModalProps) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card version-history-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <h3>历史版本</h3>
+            <p className="version-history-subtitle">每次保存都会创建快照；恢复前会自动保留当前内容。</p>
+          </div>
+          <button className="modal-close" onClick={onClose} aria-label="关闭历史版本">&times;</button>
+        </div>
+        <div className="version-history-list">
+          {isLoading ? (
+            <p className="version-history-empty">正在加载历史版本...</p>
+          ) : versions.length === 0 ? (
+            <p className="version-history-empty">还没有可恢复的历史版本。编辑并保存后会自动生成快照。</p>
+          ) : (
+            versions.map((version) => (
+              <div key={version.id} className="version-history-item">
+                <div className="version-badge">V{version.version}</div>
+                <div className="version-history-details">
+                  <strong>{getVersionRemark(version.remark)}</strong>
+                  <span>{formatShanghaiDate(version.created_at)}</span>
+                  <span>保存者：{version.created_by_name || '未知用户'}</span>
+                </div>
+                {canRestore ? (
+                  <button
+                    className="version-restore-btn"
+                    disabled={restoringVersionId !== null}
+                    onClick={() => onRestore(version)}
+                  >
+                    {restoringVersionId === version.id ? '恢复中...' : '恢复此版本'}
+                  </button>
+                ) : (
+                  <span className="version-view-only">仅查看</span>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface RestoreVersionConfirmModalProps {
+  version: FileVersion;
+  isRestoring: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+function RestoreVersionConfirmModal({
+  version,
+  isRestoring,
+  onCancel,
+  onConfirm,
+}: RestoreVersionConfirmModalProps) {
+  return (
+    <div className="modal-overlay restore-version-overlay" onClick={isRestoring ? undefined : onCancel}>
+      <div className="modal-card restore-version-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="restore-version-title">
+        <div className="restore-version-header">
+          <div className="restore-version-icon" aria-hidden="true">V</div>
+          <span>版本回滚</span>
+        </div>
+        <div className="restore-version-content">
+          <h3 id="restore-version-title">确认恢复到 V{version.version}？</h3>
+          <p>当前内容会先自动保存为一个新版本，已有历史记录不会丢失。</p>
+          <div className="restore-version-summary">
+            <span>目标版本</span>
+            <strong>V{version.version}</strong>
+            <em>{getVersionRemark(version.remark)}</em>
+          </div>
+          <div className="restore-version-actions">
+            <button className="restore-version-cancel" disabled={isRestoring} onClick={onCancel}>取消</button>
+            <button className="restore-version-confirm" disabled={isRestoring} onClick={onConfirm}>
+              {isRestoring ? '正在恢复...' : '确认回滚'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1518,9 +1736,9 @@ function PermissionModal({ fileId, token, permissions, isLoading, onClose, onRef
               <div className="permission-list">
                 {permissions.map((p) => (
                   <div key={p.id} className="permission-item">
-                    <span className="user-avatar">{(p.username || `用户${p.user_id}`).charAt(0).toUpperCase()}</span>
+                    <span className="user-avatar">{(p.username || '未知用户').charAt(0).toUpperCase()}</span>
                     <span className="permission-user">
-                      <strong>{p.username || `用户 ${p.user_id}`}</strong>
+                      <strong>{p.username || '未知用户'}</strong>
                       <span>{permissionDescription(p.permission)}</span>
                     </span>
                     <span className={`permission-badge ${p.permission}`}>{permissionLabel(p.permission)}</span>
@@ -1528,7 +1746,7 @@ function PermissionModal({ fileId, token, permissions, isLoading, onClose, onRef
                       className="permission-remove-btn"
                       onClick={() => setRevokeTarget({
                         userId: p.user_id,
-                        username: p.username || `用户 ${p.user_id}`,
+                        username: p.username || '未知用户',
                         description: permissionDescription(p.permission),
                       })}
                     >

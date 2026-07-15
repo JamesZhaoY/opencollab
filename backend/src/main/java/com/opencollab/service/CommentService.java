@@ -7,6 +7,7 @@ import com.opencollab.entity.Comment;
 import com.opencollab.entity.File;
 import com.opencollab.exception.ResourceNotFoundException;
 import com.opencollab.mapper.CommentMapper;
+import com.opencollab.mapper.UserMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,10 +19,12 @@ public class CommentService {
 
     private final CommentMapper commentMapper;
     private final FileService fileService;
+    private final UserMapper userMapper;
 
-    public CommentService(CommentMapper commentMapper, FileService fileService) {
+    public CommentService(CommentMapper commentMapper, FileService fileService, UserMapper userMapper) {
         this.commentMapper = commentMapper;
         this.fileService = fileService;
+        this.userMapper = userMapper;
     }
 
     @Transactional(readOnly = true)
@@ -33,7 +36,7 @@ public class CommentService {
                         .eq(Comment::getFileId, fileId)
                         .orderByAsc(Comment::getCreatedAt))
                 .stream()
-                .map(this::toResponse)
+                .map(comment -> toResponse(comment, resolveUsername(comment.getUserId())))
                 .collect(Collectors.toList());
     }
 
@@ -41,7 +44,7 @@ public class CommentService {
     public CommentResponse createComment(Long fileId, CommentCreateRequest request, Long userId) {
         File file = fileService.getFileEntityById(fileId, userId);
         if (file == null) {
-            throw new ResourceNotFoundException("File not found");
+            throw new ResourceNotFoundException("文件不存在");
         }
         Comment comment = new Comment();
         comment.setFileId(fileId);
@@ -50,18 +53,24 @@ public class CommentService {
         comment.setContent(request.getContent());
         comment.setIsResolved(false);
         commentMapper.insert(comment);
-        return toResponse(comment);
+        return toResponse(comment, resolveUsername(userId));
     }
 
     public void deleteByFileId(Long fileId) {
         commentMapper.delete(new LambdaQueryWrapper<Comment>().eq(Comment::getFileId, fileId));
     }
 
-    private CommentResponse toResponse(Comment c) {
+    private String resolveUsername(Long userId) {
+        com.opencollab.entity.User user = userMapper.selectById(userId);
+        return user != null ? user.getUsername() : null;
+    }
+
+    private CommentResponse toResponse(Comment c, String username) {
         CommentResponse r = new CommentResponse();
         r.setId(c.getId());
         r.setFileId(c.getFileId());
         r.setUserId(c.getUserId());
+        r.setUsername(username);
         r.setCellRef(c.getCellRef());
         r.setContent(c.getContent());
         r.setIsResolved(c.getIsResolved());

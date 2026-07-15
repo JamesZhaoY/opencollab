@@ -960,6 +960,7 @@ input, textarea, select {
   display: flex;
   flex: 1;
   overflow: hidden;
+  position: relative;
 }
 
 .editor-main {
@@ -1532,7 +1533,44 @@ input, textarea, select {
   color: var(--text-primary);
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 6px;
+}
+
+.comment-panel-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.comment-panel-close:hover {
+  background: var(--bg-muted);
+  color: var(--text-primary);
+}
+
+.markdown-editor-body .comment-panel {
+  position: absolute;
+  z-index: 30;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(360px, 100%);
+  border-left: 1px solid var(--border);
+  box-shadow: -18px 0 34px rgba(15, 23, 42, 0.12);
+  animation: commentPanelIn 0.2s ease-out;
+}
+
+@keyframes commentPanelIn {
+  from { opacity: 0; transform: translateX(18px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 
 .comment-panel-header .count {
@@ -1954,6 +1992,262 @@ input, textarea, select {
 /* ===== PERMISSION MODAL ===== */
 .permission-modal {
   width: 680px;
+}
+
+/* ===== VERSION HISTORY ===== */
+.version-history-modal {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.version-history-modal .modal-header {
+  align-items: flex-start;
+}
+
+.version-history-subtitle {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.version-history-list {
+  max-height: min(58vh, 520px);
+  overflow-y: auto;
+  padding: 14px 20px 20px;
+}
+
+.version-history-empty {
+  margin: 0;
+  padding: 36px 18px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.version-history-item {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.version-history-item:first-child {
+  padding-top: 2px;
+}
+
+.version-history-item:last-child {
+  border-bottom: 0;
+  padding-bottom: 2px;
+}
+
+.version-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--primary-light);
+  color: var(--primary-dark);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.version-history-details {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.version-history-details strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.version-history-details span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.version-restore-btn {
+  border: 1px solid #bfdbfe;
+  border-radius: 7px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.version-restore-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: var(--primary-light);
+}
+
+.version-restore-btn:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.version-view-only {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.restore-version-overlay {
+  z-index: 120;
+  background: rgba(15, 23, 42, 0.5);
+  backdrop-filter: blur(5px);
+}
+
+.restore-version-modal {
+  width: min(460px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #dbe3ee;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 20px 48px rgba(15, 23, 42, 0.22);
+}
+
+.restore-version-header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  background: #f8faff;
+  color: var(--primary-dark);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.restore-version-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--primary-light);
+  color: var(--primary-dark);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.restore-version-content {
+  min-width: 0;
+  padding: 20px 20px 18px;
+}
+
+.restore-version-content h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+.restore-version-content > p {
+  margin: 7px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.restore-version-summary {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-muted);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.restore-version-summary strong {
+  color: var(--primary-dark);
+  font-size: 13px;
+}
+
+.restore-version-summary em {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-style: normal;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.restore-version-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.restore-version-cancel,
+.restore-version-confirm {
+  min-width: 82px;
+  height: 36px;
+  padding: 0 15px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.restore-version-cancel {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: var(--text-secondary);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.restore-version-cancel:hover:not(:disabled) {
+  border-color: #94a3b8;
+  background: #f8fafc;
+  color: var(--text-primary);
+}
+
+.restore-version-cancel:active:not(:disabled),
+.restore-version-confirm:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.restore-version-cancel:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.restore-version-confirm {
+  border: 1px solid var(--primary-dark);
+  background: var(--primary);
+  color: #fff;
+  box-shadow: 0 4px 10px rgba(49, 80, 189, 0.18);
+}
+
+.restore-version-confirm:hover:not(:disabled) {
+  background: var(--primary-dark);
+}
+
+.restore-version-confirm:disabled {
+  cursor: wait;
+  opacity: 0.7;
 }
 
 .modal-title-icon {
@@ -3687,6 +3981,11 @@ body {
 
   .comment-panel {
     width: 100%;
+  }
+
+  .markdown-editor-body .comment-panel {
+    width: 100%;
+    box-shadow: none;
   }
 
   .markdown-source,

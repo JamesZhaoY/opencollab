@@ -1,18 +1,24 @@
 package com.opencollab.dto;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
-import lombok.NoArgsConstructor;
 
 @Data
-@AllArgsConstructor
-@NoArgsConstructor
 public class Result<T> {
     private int code;
     private String message;
     /** FastAPI-compatible error field; mirrors message on failures. */
     private String detail;
     private T data;
+
+    public Result() {
+    }
+
+    public Result(int code, String message, String detail, T data) {
+        this.code = code;
+        this.message = message;
+        this.detail = detail;
+        this.data = data;
+    }
 
     public static <T> Result<T> success() {
         return new Result<>(200, "Success", null, null);

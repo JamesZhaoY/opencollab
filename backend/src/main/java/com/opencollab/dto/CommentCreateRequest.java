@@ -8,7 +8,7 @@ import javax.validation.constraints.NotBlank;
 public class CommentCreateRequest {
     private String cellRef;
 
-    @NotBlank(message = "Content is required")
+    @NotBlank(message = "评论内容不能为空")
     private String content;
 
     public String getCellRef() { return cellRef; }

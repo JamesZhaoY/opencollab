@@ -6,7 +6,7 @@ import javax.validation.constraints.NotBlank;
 
 @Data
 public class FileCreateRequest {
-    @NotBlank(message = "File name is required")
+    @NotBlank(message = "文件名不能为空")
     private String name;
     private String description;
     private String content;

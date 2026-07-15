@@ -37,11 +37,22 @@ export interface Comment {
   id: number;
   file_id: number;
   user_id: number;
+  username?: string | null;
   cell_ref: string | null;
   content: string;
   is_resolved: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface FileVersion {
+  id: number;
+  file_id: number;
+  version: number;
+  created_by: number | null;
+  created_by_name?: string | null;
+  created_at: string;
+  remark: string | null;
 }
 
 export interface AuthTokens {

@@ -35,10 +35,10 @@ public class PermissionService {
     public List<PermissionResponse> getPermissionsForFile(Long fileId, Long userId) {
         File file = fileMapper.selectById(fileId);
         if (file == null) {
-            throw new ResourceNotFoundException("File not found");
+            throw new ResourceNotFoundException("文件不存在");
         }
         if (!file.getOwnerId().equals(userId)) {
-            throw new UnauthorizedException("Only file owner can view permissions");
+            throw new UnauthorizedException("只有文件所有者可以查看权限设置");
         }
         return permissionMapper.selectList(
                 new LambdaQueryWrapper<Permission>().eq(Permission::getFileId, fileId))
@@ -51,14 +51,14 @@ public class PermissionService {
     public PermissionResponse grantPermission(GrantPermissionRequest request, Long granterId) {
         File file = fileMapper.selectById(request.getFileId());
         if (file == null) {
-            throw new ResourceNotFoundException("File not found");
+            throw new ResourceNotFoundException("文件不存在");
         }
         if (!file.getOwnerId().equals(granterId)) {
-            throw new UnauthorizedException("Only file owner can share the file");
+            throw new UnauthorizedException("只有文件所有者可以分享文件");
         }
         User grantee = userMapper.selectById(request.getUserId());
         if (grantee == null) {
-            throw new ResourceNotFoundException("User not found");
+            throw new ResourceNotFoundException("用户不存在");
         }
 
         Permission permission = permissionMapper.selectOne(
@@ -84,17 +84,17 @@ public class PermissionService {
     public void revokePermission(Long fileId, Long userId, Long granterId) {
         File file = fileMapper.selectById(fileId);
         if (file == null) {
-            throw new ResourceNotFoundException("File not found");
+            throw new ResourceNotFoundException("文件不存在");
         }
         if (!file.getOwnerId().equals(granterId)) {
-            throw new UnauthorizedException("Only file owner can revoke permissions");
+            throw new UnauthorizedException("只有文件所有者可以移除权限");
         }
         Permission permission = permissionMapper.selectOne(
                 new LambdaQueryWrapper<Permission>()
                         .eq(Permission::getFileId, fileId)
                         .eq(Permission::getUserId, userId));
         if (permission == null) {
-            throw new ResourceNotFoundException("Permission not found");
+            throw new ResourceNotFoundException("权限记录不存在");
         }
         permissionMapper.deleteById(permission.getId());
     }

@@ -35,7 +35,7 @@ public class UserService {
     public UserResponse getUserById(Long id) {
         User user = userMapper.selectById(id);
         if (user == null) {
-            throw new ResourceNotFoundException("User not found with id: " + id);
+            throw new ResourceNotFoundException("用户不存在");
         }
         return toUserResponse(user);
     }
@@ -45,7 +45,7 @@ public class UserService {
         User user = userMapper.selectOne(
                 new LambdaQueryWrapper<User>().eq(User::getUsername, username));
         if (user == null) {
-            throw new ResourceNotFoundException("User not found: " + username);
+            throw new ResourceNotFoundException("用户不存在");
         }
         return toUserResponse(user);
     }
@@ -65,10 +65,10 @@ public class UserService {
     @Transactional
     public UserResponse createUser(AdminCreateUserRequest request) {
         if (userMapper.selectCount(new LambdaQueryWrapper<User>().eq(User::getUsername, request.getUsername())) > 0) {
-            throw new ResourceAlreadyExistsException("Username already exists");
+            throw new ResourceAlreadyExistsException("用户名已存在");
         }
         if (userMapper.selectCount(new LambdaQueryWrapper<User>().eq(User::getEmail, request.getEmail())) > 0) {
-            throw new ResourceAlreadyExistsException("Email already exists");
+            throw new ResourceAlreadyExistsException("邮箱已被使用");
         }
 
         User user = new User();
@@ -87,13 +87,13 @@ public class UserService {
     public UserResponse updateUser(Long id, UserUpdateRequest request) {
         User user = userMapper.selectById(id);
         if (user == null) {
-            throw new ResourceNotFoundException("User not found with id: " + id);
+            throw new ResourceNotFoundException("用户不存在");
         }
 
         if (request.getEmail() != null) {
             Long dup = userMapper.selectCount(new LambdaQueryWrapper<User>().eq(User::getEmail, request.getEmail()));
             if (dup > 0 && !user.getEmail().equals(request.getEmail())) {
-                throw new ResourceAlreadyExistsException("Email already exists");
+                throw new ResourceAlreadyExistsException("邮箱已被使用");
             }
             user.setEmail(request.getEmail());
         }
@@ -114,7 +114,7 @@ public class UserService {
     public void deleteUser(Long id) {
         User user = userMapper.selectById(id);
         if (user == null) {
-            throw new ResourceNotFoundException("User not found with id: " + id);
+            throw new ResourceNotFoundException("用户不存在");
         }
         user.setIsActive(false);
         userMapper.updateById(user);
@@ -124,7 +124,7 @@ public class UserService {
     public void resetPassword(Long id, String newPassword) {
         User user = userMapper.selectById(id);
         if (user == null) {
-            throw new ResourceNotFoundException("User not found with id: " + id);
+            throw new ResourceNotFoundException("用户不存在");
         }
         user.setPasswordHash(passwordEncoder.encode(newPassword));
         userMapper.updateById(user);
