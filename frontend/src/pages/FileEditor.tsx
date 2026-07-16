@@ -20,6 +20,7 @@ import CanvasEditor, {
 } from '@hufe921/canvas-editor';
 import type { Comment, FileVersion, Permission as PermissionType } from '@/types';
 import { authFetch } from '@/services/authFetch';
+import { aiContext } from '@/services/aiContext';
 import { parseWorkbookSnapshot, workbookToPersistedSheets } from '@/utils/univerAdapter';
 import { applyTheme, getStoredTheme, resolveTheme, toggleTheme, type ThemeMode } from '@/utils/theme';
 
@@ -335,6 +336,7 @@ export default function FileEditorPage() {
   const markdownSplitRef = useRef<HTMLDivElement>(null);
   const draggingSplitRef = useRef(false);
   useEffect(() => { applyTheme(theme); }, [theme]);
+
   useEffect(() => { localStorage.setItem('opencollab-md-layout', markdownLayout); }, [markdownLayout]);
   useEffect(() => { localStorage.setItem('opencollab-md-split', String(markdownSplitRatio)); }, [markdownSplitRatio]);
 
@@ -354,6 +356,7 @@ export default function FileEditorPage() {
       window.removeEventListener('pointerup', onUp);
     };
   }, []);
+
   const [showPermissions, setShowPermissions] = useState(false);
   const [permissions, setPermissions] = useState<PermissionType[]>([]);
   const [showVersionHistory, setShowVersionHistory] = useState(false);
@@ -367,6 +370,11 @@ export default function FileEditorPage() {
   const [editorError, setEditorError] = useState<string | null>(null);
   const [wordPluginBusy, setWordPluginBusy] = useState(false);
   const [textContent, setTextContent] = useState('');
+
+  // Publish the current editor content as the AI assistant context.
+  useEffect(() => {
+    aiContext.current = textContentRef.current || '';
+  }, [textContent]);
   const [collaborationReadyVersion, setCollaborationReadyVersion] = useState(0);
   const [editorLoadedFileId, setEditorLoadedFileId] = useState<string | null>(null);
   const saveStatusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1275,12 +1283,6 @@ export default function FileEditorPage() {
             {canManagePermissions && (
               <button className="btn-tb" onClick={() => setShowPermissions(true)}>权限</button>
             )}
-            <button
-              className={`btn-tb ${showComments ? 'active' : ''}`}
-              onClick={() => setShowComments(!showComments)}
-            >
-              评论
-            </button>
           </div>
         </div>
 
@@ -1438,7 +1440,6 @@ export default function FileEditorPage() {
           )}
         </div>
       </div>
-
       {/* Permission Modal */}
       {showPermissions && (
         <PermissionModal

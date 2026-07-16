@@ -8,6 +8,7 @@ import AdminUsersPage from '@/pages/AdminUsers';
 import ChangePasswordPage from '@/pages/ChangePassword';
 import AuthRedirectHandler from '@/components/AuthRedirectHandler';
 import UserDock from '@/components/UserDock';
+import AiAssistant from '@/components/AiAssistant';
 
 export default function App() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -25,6 +26,7 @@ export default function App() {
       <div id="auth-token-expired" style={{ display: 'none' }} />
       <AuthRedirectHandler />
       <UserDock />
+      <AiAssistant />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route

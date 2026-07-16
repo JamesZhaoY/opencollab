@@ -1,6 +1,6 @@
 # OpenCollab
 
-OpenCollab 是面向团队内部使用的在线协作文档平台，支持 Markdown、Word 和 Excel 文档的创建、编辑、分享、评论、版本管理与多人实时协作。
+OpenCollab 是面向团队内部使用的在线协作文档平台，支持 Markdown、Word 和 Excel 文档的创建、编辑、分享、评论、版本管理与多人实时协作，并内置 AI 办公助手，可解答办公软件、文档写作与数据分析等问题。
 
 ## 技术栈
 
@@ -57,6 +57,11 @@ JWT_SECRET=replace-with-a-long-random-secret
 
 REDIS_PASSWORD=
 APP_ALLOWED_ORIGINS=http://localhost:5173,http://localhost
+
+# AI 助手（可选；使用 Ollama 等本地模型时可留空 AI_API_KEY）
+AI_BASE_URL=https://apihub.agnes-ai.com/v1/chat/completions
+AI_API_KEY=
+AI_MODEL=agnes-2.0-flash
 ```
 
 生产环境务必使用随机的数据库密码和 JWT 密钥，并将 `APP_ALLOWED_ORIGINS` 修改为实际前端域名。
@@ -124,7 +129,29 @@ USE excel_collab;
 UPDATE users SET role = 'admin' WHERE username = '<用户名>';
 ```
 
+## AI 助手
+
+前端提供全局可拖拽的 AI 办公助手悬浮按钮，支持在任意页面发起对话；在文档编辑器等页面会自动把当前文件内容作为上下文一并发送给模型。后端通过 `POST /api/ai/chat` 代理到兼容 OpenAI 的聊天补全接口，API Key 仅保存在服务端，不会暴露给浏览器。
+
+功能默认关闭，需通过 `.env` 中的以下变量开启：
+
+```dotenv
+# 聊天补全接口地址（兼容 OpenAI 格式）
+AI_BASE_URL=https://apihub.agnes-ai.com/v1/chat/completions
+# 服务端 API Key；使用 Ollama 等无需鉴权的本地模型时可留空
+AI_API_KEY=
+# 模型名称
+AI_MODEL=agnes-2.0-flash
+```
+
+说明：
+
+- 后端使用 `RestTemplate` 调用 `AI_BASE_URL`，并在请求头携带 `Authorization: Bearer <AI_API_KEY>`（Key 为空时不携带）。
+- 未配置 `AI_API_KEY` 且接口为 OpenAI 域名时会返回明确报错；本地模型（如 Ollama）可留空 Key。
+- 请求体包含固定的企业办公系统提示词与可选的文件上下文，模型仅用于办公相关问题解答。
+
 ## 生产部署注意事项
+
 
 - 为 MySQL、Redis 和上传目录保留 Docker volume，避免容器重建后丢失数据。
 - Nginx 配置已包含 WebSocket 升级头；部署 HTTPS 时，浏览器端会自动使用 `wss`。

@@ -41,6 +41,11 @@ jwt:
   expiration: 900000
   refresh-expiration: 604800000
 
+
+ai:
+  base-url: ${AI_BASE_URL:https://apihub.agnes-ai.com/v1/chat/completions}
+  api-key: ${AI_API_KEY:}
+  model: ${AI_MODEL:agnes-2.0-flash}
 app:
   allowed-origins: ${APP_ALLOWED_ORIGINS:http://localhost:5173}
   upload-dir: ${UPLOAD_DIR:./uploads}
