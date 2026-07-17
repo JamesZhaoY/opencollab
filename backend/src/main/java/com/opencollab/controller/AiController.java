@@ -5,6 +5,7 @@ import com.opencollab.dto.Result;
 import com.opencollab.service.AiService;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.CacheControl;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
@@ -39,6 +40,9 @@ public class AiController {
             @Valid @RequestBody AiChatRequest request) {
         return ResponseEntity.ok()
                 .contentType(MediaType.TEXT_EVENT_STREAM)
+                .cacheControl(CacheControl.noCache())
+                // Prevent Nginx from collecting SSE chunks until the response ends.
+                .header("X-Accel-Buffering", "no")
                 .body(outputStream -> aiService.stream(request, outputStream));
     }
 }

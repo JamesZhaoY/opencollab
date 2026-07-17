@@ -9,6 +9,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
@@ -28,7 +29,7 @@ import java.util.Map;
 @Service
 public class AiService {
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${ai.ollama.base-url:http://host.docker.internal:11434/v1/chat/completions}")
@@ -48,6 +49,15 @@ public class AiService {
 
     @Value("${ai.agnes.model:agnes-2.0-flash}")
     private String agnesModel;
+
+    public AiService() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(15_000);
+        // Read timeout is intentionally much longer than the connection timeout:
+        // a reasoning model can take a while before emitting its first SSE token.
+        factory.setReadTimeout(10 * 60 * 1000);
+        this.restTemplate = new RestTemplate(factory);
+    }
 
     public String chat(AiChatRequest request) {
         ProviderConfig provider = providerFor(request.getProvider());
@@ -71,6 +81,10 @@ public class AiService {
         ProviderConfig provider = providerFor(request.getProvider());
         HttpEntity<String> entity = createRequest(request, true, provider);
         try {
+            // Start the SSE response immediately so proxies do not classify a
+            // model's initial reasoning delay as an idle upstream connection.
+            output.write("event: ready\ndata: {\"choices\":[]}\n\n".getBytes(StandardCharsets.UTF_8));
+            output.flush();
             restTemplate.execute(provider.baseUrl, HttpMethod.POST,
                     clientRequest -> {
                         clientRequest.getHeaders().putAll(entity.getHeaders());

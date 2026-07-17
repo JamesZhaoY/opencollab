@@ -6,6 +6,11 @@ server:
 spring:
   application:
     name: opencollab-backend
+  mvc:
+    async:
+      # AI SSE may wait for a model's first token; keep the servlet async
+      # request alive long enough for slow local and remote models.
+      request-timeout: 10m
   jackson:
     time-zone: Asia/Shanghai
   datasource:
