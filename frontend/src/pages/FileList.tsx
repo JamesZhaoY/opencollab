@@ -99,6 +99,7 @@ export default function FileListPage() {
   const [deleteIntent, setDeleteIntent] = useState<DeleteIntent>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [uploadFeedback, setUploadFeedback] = useState<UploadFeedback>(null);
+  const [isWorkspaceLoading, setIsWorkspaceLoading] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
 
@@ -118,14 +119,13 @@ export default function FileListPage() {
   }, []);
 
   useEffect(() => {
-    if (tab === 'owned') {
-      fetchFiles();
-    } else if (tab === 'shared') {
-      fetchSharedFiles();
-    } else {
-      fetchTrashedFiles();
-    }
-  }, [tab, fetchFiles, fetchSharedFiles, fetchTrashedFiles]);
+    let cancelled = false;
+    void Promise.all([fetchFiles(), fetchSharedFiles(), fetchTrashedFiles()])
+      .finally(() => {
+        if (!cancelled) setIsWorkspaceLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [fetchFiles, fetchSharedFiles, fetchTrashedFiles]);
 
   useEffect(() => {
     localStorage.setItem('opencollab-doc-types', JSON.stringify(selectedTypes));
@@ -454,7 +454,7 @@ export default function FileListPage() {
               </div>
             </div>
 
-            {loading ? (
+          {loading || isWorkspaceLoading ? (
               <div className="file-table skeleton-table" aria-live="polite" aria-label="正在加载文件">
                 <div className="file-row header">
                   <div>类型</div>

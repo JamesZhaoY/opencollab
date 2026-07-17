@@ -43,9 +43,14 @@ jwt:
 
 
 ai:
-  base-url: ${AI_BASE_URL:https://apihub.agnes-ai.com/v1/chat/completions}
-  api-key: ${AI_API_KEY:}
-  model: ${AI_MODEL:agnes-2.0-flash}
+  ollama:
+    base-url: ${OLLAMA_BASE_URL:http://host.docker.internal:11434/v1/chat/completions}
+    api-key: ${OLLAMA_API_KEY:}
+    model: ${OLLAMA_MODEL:qwen2.5:3b}
+  agnes:
+    base-url: ${AGNES_BASE_URL:${AI_BASE_URL:https://apihub.agnes-ai.com/v1/chat/completions}}
+    api-key: ${AGNES_API_KEY:${AI_API_KEY:}}
+    model: ${AGNES_MODEL:${AI_MODEL:agnes-2.0-flash}}
 app:
   allowed-origins: ${APP_ALLOWED_ORIGINS:http://localhost:5173}
   upload-dir: ${UPLOAD_DIR:./uploads}

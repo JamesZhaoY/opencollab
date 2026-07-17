@@ -121,14 +121,6 @@ public class FileController {
         return Result.success(fileService.saveFileContent(id, request, currentUser(userDetails).getId()));
     }
 
-    @PostMapping(value = "/{id}/sync", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
-    public Result<Void> syncYdoc(@PathVariable Long id,
-                                 @RequestBody byte[] body,
-                                 @AuthenticationPrincipal UserDetails userDetails) {
-        fileService.syncYdoc(id, body, currentUser(userDetails).getId());
-        return Result.success();
-    }
-
     @DeleteMapping("/{id}")
     public Result<Void> deleteFile(@PathVariable Long id,
                                    @AuthenticationPrincipal UserDetails userDetails) {
@@ -158,6 +150,12 @@ public class FileController {
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename*=UTF-8''" + encoded)
                 .contentType(MediaType.parseMediaType(payload.contentType))
                 .body(payload.bytes);
+    }
+
+    @GetMapping("/{id}/download-name")
+    public Result<String> getDownloadFilename(@PathVariable Long id,
+                                              @AuthenticationPrincipal UserDetails userDetails) {
+        return Result.success(fileService.getDownloadFilename(id, currentUser(userDetails).getId()));
     }
 
     // ---------- comments ----------

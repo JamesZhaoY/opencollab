@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import { useFileStore } from '@/stores/fileStore';
@@ -9,6 +9,7 @@ import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import zhCN from '@univerjs/preset-sheets-core/locales/zh-CN';
 import type { IRange, IWorkbookData } from '@univerjs/core';
 import { LocaleType } from '@univerjs/core';
+import type * as Y from 'yjs';
 import CanvasEditor, {
   EditorMode,
   ListStyle,
@@ -23,6 +24,8 @@ import { authFetch } from '@/services/authFetch';
 import { aiContext } from '@/services/aiContext';
 import { parseWorkbookSnapshot, workbookToPersistedSheets } from '@/utils/univerAdapter';
 import { applyTheme, getStoredTheme, resolveTheme, toggleTheme, type ThemeMode } from '@/utils/theme';
+
+const MilkdownMarkdownEditor = lazy(() => import('@/components/MilkdownMarkdownEditor'));
 
 function formatShanghaiDate(value: string) {
   const date = new Date(value);
@@ -46,21 +49,26 @@ type CanvasEditorHandle = InstanceType<typeof CanvasEditor>;
 type DisposableLike = { dispose: () => void };
 type DocumentType = 'excel' | 'markdown' | 'word' | string;
 type OnlineCollaborator = { id: number | string; name: string };
+type ExcelCellLock = {
+  clientId: number;
+  username: string;
+  sheetId: string;
+  row: number;
+  column: number;
+};
 type DocxCommand = CanvasEditorHandle['command'] & {
   executeImportDocx?: (options: { arrayBuffer: ArrayBuffer }) => Promise<void> | void;
   executeExportDocx?: (options: { fileName: string }) => void;
 };
 type CanvasEditorPlugin = (editor: CanvasEditorHandle) => void;
 
-function disposeUniverLater(handle: UniverHandle | null) {
+function disposeUniver(handle: UniverHandle | null) {
   if (!handle) return;
-  window.setTimeout(() => {
-    try {
-      handle.univer.dispose();
-    } catch (err) {
-      console.warn('Failed to dispose Univer:', err);
-    }
-  }, 0);
+  try {
+    handle.univer.dispose();
+  } catch (err) {
+    console.warn('Failed to dispose Univer:', err);
+  }
 }
 
 function rangeToCellRef(range: IRange | undefined): string | null {
@@ -141,6 +149,34 @@ function serializeCanvasEditorValue(value: IEditorResult): string {
   });
 }
 
+/** Apply only the changed range so each Word keystroke stays a small Yjs update. */
+function replaceYTextContent(yText: Y.Text, nextValue: string) {
+  const currentValue = yText.toString();
+  if (currentValue === nextValue) return;
+
+  let start = 0;
+  const commonLength = Math.min(currentValue.length, nextValue.length);
+  while (start < commonLength && currentValue.charCodeAt(start) === nextValue.charCodeAt(start)) {
+    start++;
+  }
+
+  let currentEnd = currentValue.length;
+  let nextEnd = nextValue.length;
+  while (
+    currentEnd > start
+    && nextEnd > start
+    && currentValue.charCodeAt(currentEnd - 1) === nextValue.charCodeAt(nextEnd - 1)
+  ) {
+    currentEnd--;
+    nextEnd--;
+  }
+
+  yText.doc?.transact(() => {
+    if (currentEnd > start) yText.delete(start, currentEnd - start);
+    if (nextEnd > start) yText.insert(start, nextValue.slice(start, nextEnd));
+  });
+}
+
 function takePendingDocxImport(fileId: string | undefined): ArrayBuffer | null {
   if (!fileId) return null;
   const key = `pending_docx_import:${fileId}`;
@@ -156,136 +192,6 @@ function takePendingDocxImport(fileId: string | undefined): ArrayBuffer | null {
   }
 }
 
-function renderInlineMarkdown(text: string) {
-  const segments = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
-  return segments.map((segment, index) => {
-    if (segment.startsWith('**') && segment.endsWith('**')) {
-      return <strong key={index}>{segment.slice(2, -2)}</strong>;
-    }
-    if (segment.startsWith('`') && segment.endsWith('`')) {
-      return <code key={index}>{segment.slice(1, -1)}</code>;
-    }
-    return <span key={index}>{segment}</span>;
-  });
-}
-
-function parseTableCells(line: string): string[] {
-  const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
-  return trimmed.split('|').map((cell) => cell.trim());
-}
-
-function isTableRow(line: string): boolean {
-  return line.includes('|') && parseTableCells(line).length >= 2;
-}
-
-function getTableAlignment(separator: string): 'left' | 'center' | 'right' {
-  const cell = separator.trim();
-  if (cell.startsWith(':') && cell.endsWith(':')) return 'center';
-  if (cell.endsWith(':')) return 'right';
-  return 'left';
-}
-
-function isTableSeparator(line: string, expectedColumns: number): boolean {
-  const cells = parseTableCells(line);
-  return cells.length === expectedColumns
-    && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
-}
-
-function MarkdownPreview({ value }: { value: string }) {
-  const lines = value.split('\n');
-  const nodes = [];
-  let codeLines: string[] = [];
-  let inCode = false;
-
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index];
-    if (line.trim().startsWith('```')) {
-      if (inCode) {
-        nodes.push(<pre key={`code-${index}`}><code>{codeLines.join('\n')}</code></pre>);
-        codeLines = [];
-        inCode = false;
-      } else {
-        inCode = true;
-      }
-      continue;
-    }
-    if (inCode) {
-      codeLines.push(line);
-      continue;
-    }
-    if (!line.trim()) {
-      nodes.push(<div key={`space-${index}`} className="md-space" />);
-      continue;
-    }
-    if (isTableRow(line) && isTableSeparator(lines[index + 1] || '', parseTableCells(line).length)) {
-      const headers = parseTableCells(line);
-      const alignments = parseTableCells(lines[index + 1]).map(getTableAlignment);
-      const rows: string[][] = [];
-      index += 2;
-      while (index < lines.length && isTableRow(lines[index])) {
-        const cells = parseTableCells(lines[index]);
-        if (cells.length !== headers.length) break;
-        rows.push(cells);
-        index++;
-      }
-      index--;
-      nodes.push(
-        <div key={`table-${index}`} className="markdown-table-wrap">
-          <table className="markdown-table">
-            <thead>
-              <tr>
-                {headers.map((header, columnIndex) => (
-                  <th key={columnIndex} style={{ textAlign: alignments[columnIndex] }}>
-                    {renderInlineMarkdown(header)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, rowIndex) => (
-                <tr key={rowIndex}>
-                  {row.map((cell, columnIndex) => (
-                    <td key={columnIndex} style={{ textAlign: alignments[columnIndex] }}>
-                      {renderInlineMarkdown(cell)}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>,
-      );
-      continue;
-    }
-    const heading = line.match(/^(#{1,3})\s+(.*)$/);
-    if (heading) {
-      const level = heading[1].length;
-      const content = renderInlineMarkdown(heading[2]);
-      if (level === 1) nodes.push(<h1 key={index}>{content}</h1>);
-      if (level === 2) nodes.push(<h2 key={index}>{content}</h2>);
-      if (level === 3) nodes.push(<h3 key={index}>{content}</h3>);
-      continue;
-    }
-    const listItem = line.match(/^\s*[-*]\s+(.*)$/);
-    if (listItem) {
-      nodes.push(<p key={index} className="md-list-item">• {renderInlineMarkdown(listItem[1])}</p>);
-      continue;
-    }
-    const quote = line.match(/^>\s?(.*)$/);
-    if (quote) {
-      nodes.push(<blockquote key={index}>{renderInlineMarkdown(quote[1])}</blockquote>);
-      continue;
-    }
-    nodes.push(<p key={index}>{renderInlineMarkdown(line)}</p>);
-  }
-
-  if (inCode) {
-    nodes.push(<pre key="code-tail"><code>{codeLines.join('\n')}</code></pre>);
-  }
-
-  return <div className="markdown-preview">{nodes.length ? nodes : <p className="doc-empty">暂无内容</p>}</div>;
-}
-
 export default function FileEditorPage() {
   const { fileId } = useParams<{ fileId: string }>();
   const navigate = useNavigate();
@@ -296,7 +202,6 @@ export default function FileEditorPage() {
   const setSelectedFile = useFileStore((s) => s.setSelectedFile);
 
   const univerContainerRef = useRef<HTMLDivElement | null>(null);
-  const markdownTextAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const wordEditorContainerRef = useRef<HTMLDivElement | null>(null);
   const collabRef = useRef<CollaborationManager | null>(null);
   const univerRef = useRef<UniverHandle | null>(null);
@@ -304,9 +209,12 @@ export default function FileEditorPage() {
   const workbookRef = useRef<{ save: () => IWorkbookData } | null>(null);
   const univerDisposablesRef = useRef<DisposableLike[]>([]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const excelSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savingRef = useRef(false);
   const initializedRef = useRef(false);
   const lastDataRef = useRef<string>('');
+  const pendingRemoteExcelSnapshotRef = useRef<IWorkbookData | null>(null);
+  const isApplyingRemoteExcelRef = useRef(false);
   const documentTypeRef = useRef<DocumentType>('excel');
   const textContentRef = useRef('');
   const textYjsInitializedRef = useRef(false);
@@ -325,37 +233,7 @@ export default function FileEditorPage() {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const [theme, setTheme] = useState<ThemeMode>(() => resolveTheme(getStoredTheme()));
   const [downloadHint, setDownloadHint] = useState('');
-  const [markdownLayout, setMarkdownLayout] = useState<'split' | 'edit' | 'preview'>(() => {
-    const saved = localStorage.getItem('opencollab-md-layout');
-    return saved === 'edit' || saved === 'preview' || saved === 'split' ? saved : 'split';
-  });
-  const [markdownSplitRatio, setMarkdownSplitRatio] = useState(() => {
-    const saved = Number(localStorage.getItem('opencollab-md-split') || '0.5');
-    return Number.isFinite(saved) ? Math.min(0.75, Math.max(0.25, saved)) : 0.5;
-  });
-  const markdownSplitRef = useRef<HTMLDivElement>(null);
-  const draggingSplitRef = useRef(false);
   useEffect(() => { applyTheme(theme); }, [theme]);
-
-  useEffect(() => { localStorage.setItem('opencollab-md-layout', markdownLayout); }, [markdownLayout]);
-  useEffect(() => { localStorage.setItem('opencollab-md-split', String(markdownSplitRatio)); }, [markdownSplitRatio]);
-
-  useEffect(() => {
-    const onMove = (event: PointerEvent) => {
-      if (!draggingSplitRef.current || !markdownSplitRef.current) return;
-      const rect = markdownSplitRef.current.getBoundingClientRect();
-      if (rect.width <= 0) return;
-      const next = (event.clientX - rect.left) / rect.width;
-      setMarkdownSplitRatio(Math.min(0.75, Math.max(0.25, next)));
-    };
-    const onUp = () => { draggingSplitRef.current = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    return () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-    };
-  }, []);
 
   const [showPermissions, setShowPermissions] = useState(false);
   const [permissions, setPermissions] = useState<PermissionType[]>([]);
@@ -367,9 +245,11 @@ export default function FileEditorPage() {
   const [restoringVersionId, setRestoringVersionId] = useState<number | null>(null);
   const [versionPendingRestore, setVersionPendingRestore] = useState<FileVersion | null>(null);
   const [collaborators, setCollaborators] = useState<Map<number | string, string>>(new Map());
+  const [excelLocks, setExcelLocks] = useState<ExcelCellLock[]>([]);
   const [editorError, setEditorError] = useState<string | null>(null);
   const [wordPluginBusy, setWordPluginBusy] = useState(false);
   const [textContent, setTextContent] = useState('');
+  const [markdownEditorSession, setMarkdownEditorSession] = useState(0);
 
   // Publish the current editor content as the AI assistant context.
   useEffect(() => {
@@ -398,6 +278,61 @@ export default function FileEditorPage() {
     saveStatusTimerRef.current = setTimeout(() => setSaveStatus('idle'), 3000);
   };
 
+  const persistFile = async (createVersion = false) => {
+    if (!canEditFileRef.current) return;
+    const currentFileId = fileIdRef.current;
+    const currentToken = tokenRef.current;
+    const currentDocumentType = documentTypeRef.current;
+    if (!currentFileId || !currentToken) return;
+    if (currentDocumentType === 'excel' && !workbookRef.current) return;
+    if (savingRef.current) return;
+
+    savingRef.current = true;
+    setSaveStatus('saving');
+    try {
+      const payload = currentDocumentType === 'excel'
+        ? workbookToPersistedSheets(workbookRef.current!.save())
+        : textContentRef.current;
+      const dataStr = typeof payload === 'string' ? payload : JSON.stringify(payload);
+      if (!createVersion && dataStr === lastDataRef.current) {
+        setSaveStatus('idle');
+        return;
+      }
+
+      let attempts = 0;
+      const maxAttempts = 3;
+      while (attempts < maxAttempts) {
+        try {
+          const saveResponse = await authFetch(`/api/files/${currentFileId}/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sheets: payload, create_version: createVersion }),
+          });
+          if (!saveResponse.ok) throw new Error('保存失败');
+          const savedFile = await saveResponse.json();
+          const savedData = typeof savedFile.sheet_data === 'string' ? savedFile.sheet_data : dataStr;
+          lastDataRef.current = savedData;
+          if (currentDocumentType === 'markdown') {
+            setSelectedFile(savedFile);
+          }
+          setSaveStatus('saved');
+          clearSaveStatus();
+          return;
+        } catch (err) {
+          attempts++;
+          if (attempts >= maxAttempts) throw err;
+          await new Promise((resolve) => setTimeout(resolve, 500 * attempts));
+        }
+      }
+    } catch (err) {
+      console.error('Save failed:', err);
+      setSaveStatus('error');
+      clearSaveStatus();
+    } finally {
+      savingRef.current = false;
+    }
+  };
+
   const scheduleSave = (nextText?: string) => {
     if (!canEditFileRef.current) return;
     const currentFileId = fileIdRef.current;
@@ -410,63 +345,123 @@ export default function FileEditorPage() {
     if (currentDocumentType === 'excel' && !workbookRef.current) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
 
-    saveTimerRef.current = setTimeout(async () => {
-      if (savingRef.current) return;
-      savingRef.current = true;
-      setSaveStatus('saving');
-
-      try {
-        const payload = currentDocumentType === 'excel'
-          ? workbookToPersistedSheets(workbookRef.current!.save())
-          : textContentRef.current;
-        const dataStr = typeof payload === 'string' ? payload : JSON.stringify(payload);
-        if (dataStr === lastDataRef.current) {
-          setSaveStatus('idle');
-          return;
-        }
-
-        let attempts = 0;
-        const maxAttempts = 3;
-        while (attempts < maxAttempts) {
-          try {
-            const saveResponse = await authFetch(`/api/files/${currentFileId}/save`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ sheets: payload }),
-            });
-            if (!saveResponse.ok) throw new Error('保存失败');
-            const savedFile = await saveResponse.json();
-            if (currentDocumentType === 'excel') {
-              const collab = collabRef.current;
-              const clientId = collab?.getClientId();
-              collab?.getMap('excel').set('snapshot', {
-                data: payload,
-                clientId,
-                updatedAt: Date.now(),
-              });
-            }
-            const savedData = typeof savedFile.sheet_data === 'string' ? savedFile.sheet_data : dataStr;
-            lastDataRef.current = savedData;
-            if (currentDocumentType === 'markdown') {
-              setSelectedFile(savedFile);
-            }
-            setSaveStatus('saved');
-            clearSaveStatus();
-            return;
-          } catch (err) {
-            attempts++;
-            if (attempts >= maxAttempts) throw err;
-            await new Promise((r) => setTimeout(r, 500 * attempts));
-          }
-        }
-      } catch (err) {
-        console.error('Save failed:', err);
-        setSaveStatus('error');
-        clearSaveStatus();
-      } finally {
-        savingRef.current = false;
+    saveTimerRef.current = setTimeout(() => {
+      if (savingRef.current) {
+        scheduleSave();
+        return;
       }
+      void persistFile();
     }, 800);
+  };
+
+  const publishExcelSnapshot = () => {
+    if (!canEditFileRef.current || !workbookRef.current) return;
+    if (excelSyncTimerRef.current) clearTimeout(excelSyncTimerRef.current);
+    excelSyncTimerRef.current = setTimeout(() => {
+      const collab = collabRef.current;
+      const workbook = workbookRef.current;
+      if (!collab || !workbook || documentTypeRef.current !== 'excel') return;
+      const data = workbookToPersistedSheets(workbook.save());
+      const dataStr = JSON.stringify(data);
+      if (dataStr === lastDataRef.current) return;
+      collab.getMap('excel').set('snapshot', {
+        data,
+        clientId: collab.getClientId(),
+        updatedAt: Date.now(),
+      });
+    }, 250);
+  };
+
+  const getRemoteExcelLock = (sheetId: string, row: number, column: number) => {
+    const collab = collabRef.current;
+    if (!collab) return null;
+    try {
+      const ownClientId = collab.getClientId();
+      for (const [clientId, state] of collab.getAwareness().getStates()) {
+        if (clientId === ownClientId) continue;
+        const record = state as Record<string, unknown>;
+        const lock = record.excelLock as Partial<ExcelCellLock> | undefined;
+        if (lock?.sheetId === sheetId && lock.row === row && lock.column === column) {
+          const user = record.user as { name?: string } | undefined;
+          return user?.name || (record.username as string | undefined) || '其他用户';
+        }
+      }
+    } catch { /* awareness is still connecting */ }
+    return null;
+  };
+
+  const setLocalExcelLock = (lock: Omit<ExcelCellLock, 'clientId' | 'username'> | null) => {
+    try {
+      collabRef.current?.getAwareness().setLocalStateField('excelLock', lock);
+    } catch { /* awareness is still connecting */ }
+  };
+
+  const applyRemoteExcelSnapshot = (snapshot: IWorkbookData) => {
+    const univerAPI = univerRef.current?.univerAPI;
+    const currentWorkbook = workbookRef.current?.save();
+    const workbook = univerAPI?.getActiveWorkbook();
+    if (!univerAPI || !currentWorkbook || !workbook) return false;
+
+    const currentSheetIds = currentWorkbook.sheetOrder;
+    if (
+      currentSheetIds.length !== snapshot.sheetOrder.length
+      || currentSheetIds.some((sheetId, index) => sheetId !== snapshot.sheetOrder[index])
+    ) {
+      // Sheet creation, deletion, and reordering are not cell-data updates.
+      // Keep the current workbook mounted instead of replacing the entire component.
+      return false;
+    }
+
+    isApplyingRemoteExcelRef.current = true;
+    try {
+      for (const sheetId of snapshot.sheetOrder) {
+        const worksheet = workbook.getSheets().find((sheet) => sheet.getSheetId() === sheetId);
+        const previousSheet = currentWorkbook.sheets[sheetId];
+        const nextSheet = snapshot.sheets[sheetId];
+        if (!worksheet || !previousSheet || !nextSheet) return false;
+
+        if (nextSheet.rowCount && nextSheet.rowCount > (previousSheet.rowCount || 0)) {
+          worksheet.setRowCount(nextSheet.rowCount);
+        }
+        if (nextSheet.columnCount && nextSheet.columnCount > (previousSheet.columnCount || 0)) {
+          worksheet.setColumnCount(nextSheet.columnCount);
+        }
+
+        const previousCells = previousSheet.cellData || {};
+        const nextCells = nextSheet.cellData || {};
+        const coordinates = new Set<string>();
+        for (const [row, columns] of Object.entries(previousCells)) {
+          for (const column of Object.keys(columns || {})) coordinates.add(`${row}:${column}`);
+        }
+        for (const [row, columns] of Object.entries(nextCells)) {
+          for (const column of Object.keys(columns || {})) coordinates.add(`${row}:${column}`);
+        }
+
+        for (const coordinate of coordinates) {
+          const [rowText, columnText] = coordinate.split(':');
+          const row = Number(rowText);
+          const column = Number(columnText);
+          const previousCell = previousCells[row]?.[column];
+          const nextCell = nextCells[row]?.[column];
+          if (JSON.stringify(previousCell) === JSON.stringify(nextCell)) continue;
+          worksheet.getRange(row, column, 1, 1).setValues([[nextCell || null]]);
+        }
+      }
+      return true;
+    } finally {
+      window.setTimeout(() => {
+        isApplyingRemoteExcelRef.current = false;
+      }, 0);
+    }
+  };
+
+  const handleCreateVersion = () => {
+    if (!canEditFile || savingRef.current) return;
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    void persistFile(true);
   };
 
   // Load file detail when fileId changes.
@@ -481,16 +476,13 @@ export default function FileEditorPage() {
         if (resp.ok) {
           const data = await resp.json();
           setSelectedFile(data);
+          setMarkdownEditorSession((session) => session + 1);
           setEditorLoadedFileId(fileId);
         }
       } catch { /* ignore */ }
     };
     loadFile();
   }, [fileId, token, setSelectedFile]);
-
-  useEffect(() => {
-    collabRef.current?.setCanPersist(canEditFile);
-  }, [canEditFile, collaborationReadyVersion]);
 
   // Load comments when comment panel opens
   useEffect(() => {
@@ -568,7 +560,7 @@ export default function FileEditorPage() {
     const getCurrentToken = () => getAccessToken() || tokenRef.current;
     tokenRef.current = getAccessToken() || token;
 
-    const collab = new CollaborationManager(parseInt(fileId), getCurrentToken);
+    const collab = new CollaborationManager(parseInt(fileId));
     collabRef.current = collab;
     setCollaborationReadyVersion((version) => version + 1);
 
@@ -584,6 +576,7 @@ export default function FileEditorPage() {
         const awareness = collab.getAwareness();
         const states = awareness.getStates();
         const map = new Map<number | string, string>();
+        const locks: ExcelCellLock[] = [];
         for (const [clientId, state] of states.entries()) {
           const record = state as Record<string, unknown>;
           const user = record.user as { id?: number; name?: string } | undefined;
@@ -592,11 +585,29 @@ export default function FileEditorPage() {
           if (username) {
             map.set(stableUserId ?? `client:${clientId}`, username);
           }
+          const lock = record.excelLock as Partial<ExcelCellLock> | undefined;
+          if (
+            clientId !== collab.getClientId()
+            && username
+            && lock
+            && typeof lock.sheetId === 'string'
+            && Number.isInteger(lock.row)
+            && Number.isInteger(lock.column)
+          ) {
+            locks.push({
+              clientId,
+              username,
+              sheetId: lock.sheetId,
+              row: lock.row!,
+              column: lock.column!,
+            });
+          }
         }
         if (currentUser) {
           map.set(currentUser.id, currentUser.username);
         }
         setCollaborators(map);
+        setExcelLocks(locks);
       } catch { /* awareness not ready yet */ }
     };
     const awarenessUpdateHandler = () => updateCollaborators();
@@ -612,6 +623,7 @@ export default function FileEditorPage() {
       canvasEditorCleanupRef.current?.();
       collab.disconnect();
       collabRef.current = null;
+      setExcelLocks([]);
       if (saveTimerRef.current) {
         clearTimeout(saveTimerRef.current);
         saveTimerRef.current = null;
@@ -626,6 +638,11 @@ export default function FileEditorPage() {
   const onlineCollaborators: OnlineCollaborator[] = collaborators.size > 0
     ? Array.from(collaborators.entries()).map(([id, name]) => ({ id, name }))
     : [{ id: currentUser?.id || 'me', name: currentUser?.username || '我' }];
+  const activeExcelLock = isExcelFile ? excelLocks[0] : null;
+  const markdownCollab = isMarkdownFile ? collabRef.current : null;
+  const markdownDoc = markdownCollab?.getDoc() || null;
+  let markdownAwareness = null;
+  try { markdownAwareness = markdownCollab?.getAwareness() || null; } catch { /* provider is still connecting */ }
 
   useEffect(() => {
     if (!isExcelFile) return;
@@ -638,10 +655,17 @@ export default function FileEditorPage() {
       if (!remoteSnapshot?.data) return;
       if (remoteSnapshot.clientId === collab.getClientId()) return;
 
-      const dataStr = JSON.stringify(remoteSnapshot.data);
+      const snapshot = parseWorkbookSnapshot(
+        JSON.stringify(remoteSnapshot.data),
+        selectedFile?.name || 'Untitled',
+        `file-${fileId}`,
+      );
+      const dataStr = JSON.stringify(snapshot);
       if (dataStr === lastDataRef.current) return;
       lastDataRef.current = dataStr;
-      if (selectedFile) setSelectedFile({ ...selectedFile, sheet_data: dataStr });
+      if (!applyRemoteExcelSnapshot(snapshot)) {
+        pendingRemoteExcelSnapshotRef.current = snapshot;
+      }
       setSaveStatus('saved');
       clearSaveStatus();
     };
@@ -657,6 +681,11 @@ export default function FileEditorPage() {
     if (!collab) return;
 
     const content = selectedFile.sheet_data || '';
+    if (selectedFile.document_type === 'markdown') {
+      textContentRef.current = content;
+      setTextContent(content);
+      return;
+    }
     const yText = collab.getText('content');
 
     if (!textYjsInitializedRef.current) {
@@ -726,7 +755,7 @@ export default function FileEditorPage() {
 
     univerDisposablesRef.current.forEach((item) => item.dispose());
     univerDisposablesRef.current = [];
-    disposeUniverLater(univerRef.current);
+    disposeUniver(univerRef.current);
     univerRef.current = null;
     canvasEditorRef.current?.destroy();
     canvasEditorRef.current = null;
@@ -789,10 +818,7 @@ export default function FileEditorPage() {
             if (yText.toString() !== nextValue) {
               isPublishingLocalWordRef.current = true;
               try {
-                yText.doc?.transact(() => {
-                  yText.delete(0, yText.length);
-                  yText.insert(0, nextValue);
-                });
+                replaceYTextContent(yText, nextValue);
               } finally {
                 window.setTimeout(() => {
                   isPublishingLocalWordRef.current = false;
@@ -875,6 +901,10 @@ export default function FileEditorPage() {
 
       univerRef.current = univerHandle;
       workbookRef.current = workbook;
+      if (pendingRemoteExcelSnapshotRef.current) {
+        applyRemoteExcelSnapshot(pendingRemoteExcelSnapshotRef.current);
+        pendingRemoteExcelSnapshotRef.current = null;
+      }
 
       const selectionChanged = univerHandle.univerAPI.addEvent(
         univerHandle.univerAPI.Event.SelectionChanged,
@@ -885,10 +915,30 @@ export default function FileEditorPage() {
       const commandExecuted = univerHandle.univerAPI.addEvent(
         univerHandle.univerAPI.Event.CommandExecuted,
         () => {
-          if (canEditFile) scheduleSave();
+          if (canEditFile && !isApplyingRemoteExcelRef.current) {
+            publishExcelSnapshot();
+            scheduleSave();
+          }
         },
       );
-      univerDisposablesRef.current = [selectionChanged, commandExecuted];
+      const beforeSheetEditStart = univerHandle.univerAPI.addEvent(
+        univerHandle.univerAPI.Event.BeforeSheetEditStart,
+        (params) => {
+          if (!canEditFileRef.current) return;
+          const sheetId = params.worksheet.getSheetId();
+          const lockedBy = getRemoteExcelLock(sheetId, params.row, params.column);
+          if (lockedBy) {
+            params.cancel = true;
+            return;
+          }
+          setLocalExcelLock({ sheetId, row: params.row, column: params.column });
+        },
+      );
+      const sheetEditEnded = univerHandle.univerAPI.addEvent(
+        univerHandle.univerAPI.Event.SheetEditEnded,
+        () => setLocalExcelLock(null),
+      );
+      univerDisposablesRef.current = [selectionChanged, commandExecuted, beforeSheetEditStart, sheetEditEnded];
     } catch (err) {
       console.error('Failed to initialize Univer:', err);
       setEditorError(err instanceof Error ? err.message : '编辑器初始化失败');
@@ -899,16 +949,21 @@ export default function FileEditorPage() {
     return () => {
       univerDisposablesRef.current.forEach((item) => item.dispose());
       univerDisposablesRef.current = [];
+      setLocalExcelLock(null);
       workbookRef.current = null;
       canvasEditorCleanupRef.current?.();
       canvasEditorCleanupRef.current = null;
       canvasEditorRef.current?.destroy();
       canvasEditorRef.current = null;
-      disposeUniverLater(univerRef.current);
+      disposeUniver(univerRef.current);
       univerRef.current = null;
       if (saveTimerRef.current) {
         clearTimeout(saveTimerRef.current);
         saveTimerRef.current = null;
+      }
+      if (excelSyncTimerRef.current) {
+        clearTimeout(excelSyncTimerRef.current);
+        excelSyncTimerRef.current = null;
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -933,7 +988,9 @@ export default function FileEditorPage() {
       if (documentType === 'word') {
         const command = canvasEditorRef.current?.command as DocxCommand | undefined;
         if (command?.executeExportDocx) {
-          command.executeExportDocx({ fileName: selectedFile.name });
+          const nameResponse = await authFetch(`/api/files/${selectedFile.id}/download-name`);
+          const filename = nameResponse.ok ? await nameResponse.json() : selectedFile.name;
+          command.executeExportDocx({ fileName: typeof filename === 'string' ? filename : selectedFile.name });
           setDownloadHint('已导出 Word');
           window.setTimeout(() => setDownloadHint(''), 1800);
           return;
@@ -953,88 +1010,11 @@ export default function FileEditorPage() {
     navigate('/files');
   };
 
-  const handleTextChange = (value: string) => {
+  const handleMarkdownChange = (value: string) => {
     if (!canEditFile) return;
     setTextContent(value);
     textContentRef.current = value;
     scheduleSave(value);
-
-    const collab = collabRef.current;
-    if (collab && documentTypeRef.current !== 'excel') {
-      const yText = collab.getText('content');
-      const currentValue = yText.toString();
-      if (currentValue !== value) {
-        yText.doc?.transact(() => {
-          yText.delete(0, yText.length);
-          yText.insert(0, value);
-        });
-      }
-      return;
-    }
-  };
-
-  const applyTextCommand = (
-    command: 'h1' | 'h2' | 'bold' | 'italic' | 'code' | 'quote' | 'list' | 'divider',
-  ) => {
-    if (!canEditFile) return;
-    const textarea = markdownTextAreaRef.current;
-    if (!textarea) return;
-
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const value = textContentRef.current;
-    const selected = value.slice(start, end);
-    const fallback = isMarkdownFile ? '文本' : '内容';
-    const text = selected || fallback;
-    const atLineStart = start === 0 || value[start - 1] === '\n';
-    const linePrefix = atLineStart ? '' : '\n';
-
-    let replacement = text;
-    let selectionOffset = 0;
-    switch (command) {
-      case 'h1':
-        replacement = `${linePrefix}# ${text}`;
-        selectionOffset = linePrefix.length + 2;
-        break;
-      case 'h2':
-        replacement = `${linePrefix}## ${text}`;
-        selectionOffset = linePrefix.length + 3;
-        break;
-      case 'bold':
-        replacement = `**${text}**`;
-        selectionOffset = 2;
-        break;
-      case 'italic':
-        replacement = `_${text}_`;
-        selectionOffset = 1;
-        break;
-      case 'code':
-        replacement = isMarkdownFile ? `\`${text}\`` : `「${text}」`;
-        selectionOffset = 1;
-        break;
-      case 'quote':
-        replacement = `${linePrefix}> ${text}`;
-        selectionOffset = linePrefix.length + 2;
-        break;
-      case 'list':
-        replacement = `${linePrefix}- ${text}`;
-        selectionOffset = linePrefix.length + 2;
-        break;
-      case 'divider':
-        replacement = `${linePrefix}\n---\n`;
-        selectionOffset = replacement.length;
-        break;
-    }
-
-    const nextValue = `${value.slice(0, start)}${replacement}${value.slice(end)}`;
-    handleTextChange(nextValue);
-
-    window.requestAnimationFrame(() => {
-      textarea.focus();
-      const nextStart = selected ? start + replacement.length : start + selectionOffset;
-      const nextEnd = selected ? nextStart : nextStart + text.length;
-      textarea.setSelectionRange(nextStart, nextEnd);
-    });
   };
 
   const applyCanvasEditorCommand = (
@@ -1078,46 +1058,6 @@ export default function FileEditorPage() {
     }
     editor.command.executeFocus();
   };
-
-  const renderDocumentToolbar = () => (
-    <div className="document-toolbar" aria-label={`${getDocumentTypeLabel(documentType)} 工具栏`}>
-      <div className="document-toolbar-group">
-        <button type="button" className="document-tool-btn strong" onClick={() => applyTextCommand('h1')} disabled={!canEditFile}>
-          H1
-        </button>
-        <button type="button" className="document-tool-btn strong" onClick={() => applyTextCommand('h2')} disabled={!canEditFile}>
-          H2
-        </button>
-      </div>
-      <div className="document-toolbar-group">
-        <button type="button" className="document-tool-btn strong" onClick={() => applyTextCommand('bold')} disabled={!canEditFile}>
-          B
-        </button>
-        <button type="button" className="document-tool-btn italic" onClick={() => applyTextCommand('italic')} disabled={!canEditFile}>
-          I
-        </button>
-        <button type="button" className="document-tool-btn mono" onClick={() => applyTextCommand('code')} disabled={!canEditFile}>
-          {'</>'}
-        </button>
-      </div>
-      <div className="document-toolbar-group">
-        <button type="button" className="document-tool-btn" onClick={() => applyTextCommand('quote')} disabled={!canEditFile}>
-          引用
-        </button>
-        <button type="button" className="document-tool-btn" onClick={() => applyTextCommand('list')} disabled={!canEditFile}>
-          列表
-        </button>
-        {isMarkdownFile && (
-          <button type="button" className="document-tool-btn" onClick={() => applyTextCommand('divider')} disabled={!canEditFile}>
-            分隔线
-          </button>
-        )}
-      </div>
-      <span className="document-toolbar-hint">
-        {canEditFile ? '自动保存' : '仅查看'}
-      </span>
-    </div>
-  );
 
   const renderWordToolbar = () => (
     <div className="document-toolbar" aria-label="Word 工具栏">
@@ -1233,21 +1173,25 @@ export default function FileEditorPage() {
             <span className={`permission-pill ${canEditFile ? 'editable' : 'readonly'}`}>
               {getPermissionLabel(selectedFile?.current_permission)}
             </span>
-            <span className={`sync-status ${isSynced ? 'synced' : 'connecting'}`}>
+            {canEditFile && <span className={`sync-status ${isSynced ? 'synced' : 'connecting'}`}>
               <span className="sync-dot"></span>
               {isSynced ? '已同步' : '连接中...'}
-            </span>
-            {/* Save status indicator */}
-            {saveStatus !== 'idle' && (
+            </span>}
+            {canEditFile && saveStatus !== 'idle' && (
               <span className={`save-status ${saveStatus}`}>
                 {saveStatus === 'saving' && '保存中...'}
                 {saveStatus === 'saved' && '已同步保存'}
                 {saveStatus === 'error' && '保存失败'}
               </span>
             )}
+            {activeExcelLock && (
+              <span className="excel-lock-status">
+                {activeExcelLock.username} 正在编辑 {columnToName(activeExcelLock.column)}{activeExcelLock.row + 1}
+              </span>
+            )}
           </div>
           <div className="toolbar-right">
-            <button
+            {canEditFile && <button
               type="button"
               className="theme-toggle editor-theme-toggle"
               onClick={() => setTheme(toggleTheme())}
@@ -1255,8 +1199,8 @@ export default function FileEditorPage() {
               title={theme === 'dark' ? '浅色模式' : '深色模式'}
             >
               {theme === 'dark' ? '浅色' : '深色'}
-            </button>
-            <div className="collaborators">
+            </button>}
+            {canEditFile && <div className="collaborators">
               <span className="online-label">
                 {isSynced ? `在线 ${onlineCollaborators.length}` : '连接中'}
               </span>
@@ -1269,17 +1213,25 @@ export default function FileEditorPage() {
                     </div>
                   ))}
               </div>
-            </div>
+            </div>}
             {downloadHint && <span className="download-hint">{downloadHint}</span>}
             <button className="btn-tb" onClick={handleDownload} disabled={wordPluginBusy || downloadHint === '导出中...'}>
               {documentType === 'word' ? '导出 Word' : '下载'}
             </button>
-            <button
+            {canEditFile && <button
+              className="btn-tb"
+              onClick={handleCreateVersion}
+              disabled={!canEditFile || saveStatus === 'saving'}
+              title="创建可恢复的历史版本"
+            >
+              保存版本
+            </button>}
+            {canEditFile && <button
               className={`btn-tb ${showVersionHistory ? 'active' : ''}`}
               onClick={() => setShowVersionHistory(true)}
             >
               历史版本
-            </button>
+            </button>}
             {canManagePermissions && (
               <button className="btn-tb" onClick={() => setShowPermissions(true)}>权限</button>
             )}
@@ -1310,59 +1262,25 @@ export default function FileEditorPage() {
               </>
             ) : isMarkdownFile ? (
               <div className="document-workspace">
-                {renderDocumentToolbar()}
-                <div className="markdown-layout-bar">
-                  <div className="markdown-layout-tabs" role="tablist" aria-label="Markdown 布局">
-                    <button type="button" className={`markdown-layout-tab ${markdownLayout === 'edit' ? 'active' : ''}`} onClick={() => setMarkdownLayout('edit')}>只编辑</button>
-                    <button type="button" className={`markdown-layout-tab ${markdownLayout === 'split' ? 'active' : ''}`} onClick={() => setMarkdownLayout('split')}>双栏</button>
-                    <button type="button" className={`markdown-layout-tab ${markdownLayout === 'preview' ? 'active' : ''}`} onClick={() => setMarkdownLayout('preview')}>只预览</button>
-                  </div>
-                  <span className="markdown-layout-hint">{markdownLayout === 'split' ? '拖拽中间分隔条可调整宽度' : '可随时切换布局模式'}</span>
+                <div className="milkdown-editor-bar">
+                  <span>Markdown</span>
+                  <span>{canEditFile ? '所见即所得 · 自动保存 · 多人协作' : '仅查看'}</span>
                 </div>
-                <div
-                  className={`markdown-workspace layout-${markdownLayout}`}
-                  ref={markdownSplitRef}
-                  style={markdownLayout === 'split' ? { gridTemplateColumns: `minmax(240px, ${markdownSplitRatio}fr) 10px minmax(240px, ${1 - markdownSplitRatio}fr)` } : undefined}
-                >
-                  {(markdownLayout === 'split' || markdownLayout === 'edit') && (
-                    <div className="markdown-pane">
-                      <div className="markdown-pane-label">编辑<span>Markdown</span></div>
-                      <textarea
-                        ref={markdownTextAreaRef}
-                        className={`markdown-source ${!canEditFile ? 'readonly' : ''}`}
-                        value={textContent}
-                        onChange={(e) => handleTextChange(e.target.value)}
-                        readOnly={!canEditFile}
-                        spellCheck={false}
-                        placeholder="# 标题&#10;&#10;开始编写 Markdown..."
-                      />
-                    </div>
-                  )}
-                  {markdownLayout === 'split' && (
-                    <div
-                      className="markdown-resizer"
-                      role="separator"
-                      aria-orientation="vertical"
-                      aria-label="拖拽调整编辑与预览宽度"
-                      onPointerDown={(event) => {
-                        event.preventDefault();
-                        draggingSplitRef.current = true;
-                        document.body.style.cursor = 'col-resize';
-                        document.body.style.userSelect = 'none';
-                      }}
-                    />
-                  )}
-                  {(markdownLayout === 'split' || markdownLayout === 'preview') && (
-                    <div className="markdown-pane">
-                      <div className="markdown-pane-label">预览<span>实时渲染</span></div>
-                      <MarkdownPreview value={textContent} />
-                    </div>
-                  )}
-                </div>
+                <Suspense fallback={<div className="milkdown-loading">正在加载 Markdown 编辑器…</div>}>
+                  <MilkdownMarkdownEditor
+                    key={`${fileId}:${markdownEditorSession}`}
+                    initialMarkdown={selectedFile?.sheet_data || ''}
+                    doc={markdownDoc}
+                    awareness={markdownAwareness}
+                    readOnly={!canEditFile}
+                    onChange={handleMarkdownChange}
+                    onError={setEditorError}
+                  />
+                </Suspense>
               </div>
             ) : (
               <div className="document-workspace">
-                {renderWordToolbar()}
+                {canEditFile && renderWordToolbar()}
                 <div className="word-workspace">
                   <div ref={wordEditorContainerRef} className="canvas-editor-host" />
                 </div>
@@ -1502,7 +1420,7 @@ function VersionHistoryModal({
         <div className="modal-header">
           <div>
             <h3>历史版本</h3>
-            <p className="version-history-subtitle">每次保存都会创建快照；恢复前会自动保留当前内容。</p>
+            <p className="version-history-subtitle">自动保存只更新当前文档；“保存版本”会创建可恢复的快照。</p>
           </div>
           <button className="modal-close" onClick={onClose} aria-label="关闭历史版本">&times;</button>
         </div>
@@ -1510,7 +1428,7 @@ function VersionHistoryModal({
           {isLoading ? (
             <p className="version-history-empty">正在加载历史版本...</p>
           ) : versions.length === 0 ? (
-            <p className="version-history-empty">还没有可恢复的历史版本。编辑并保存后会自动生成快照。</p>
+            <p className="version-history-empty">还没有可恢复的历史版本。可在工具栏点击“保存版本”创建快照。</p>
           ) : (
             versions.map((version) => (
               <div key={version.id} className="version-history-item">
@@ -1562,7 +1480,7 @@ function RestoreVersionConfirmModal({
         </div>
         <div className="restore-version-content">
           <h3 id="restore-version-title">确认恢复到 V{version.version}？</h3>
-          <p>当前内容会先自动保存为一个新版本，已有历史记录不会丢失。</p>
+          <p>恢复前会自动保留当前内容，已有历史记录不会丢失。</p>
           <div className="restore-version-summary">
             <span>目标版本</span>
             <strong>V{version.version}</strong>

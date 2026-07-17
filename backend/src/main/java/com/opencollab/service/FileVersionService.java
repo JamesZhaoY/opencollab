@@ -37,17 +37,22 @@ public class FileVersionService {
         return version;
     }
 
-    @Transactional
-    public FileVersion createSnapshot(File file, Long userId, String remark) {
-        Integer max = fileVersionMapper.selectList(
+    @Transactional(readOnly = true)
+    public int getLatestVersionNumber(Long fileId) {
+        return fileVersionMapper.selectList(
                 new LambdaQueryWrapper<FileVersion>()
-                        .eq(FileVersion::getFileId, file.getId())
+                        .eq(FileVersion::getFileId, fileId)
                         .orderByDesc(FileVersion::getVersion)
                         .last("LIMIT 1"))
                 .stream()
                 .findFirst()
                 .map(FileVersion::getVersion)
                 .orElse(0);
+    }
+
+    @Transactional
+    public FileVersion createSnapshot(File file, Long userId, String remark) {
+        Integer max = getLatestVersionNumber(file.getId());
 
         FileVersion version = new FileVersion();
         version.setFileId(file.getId());

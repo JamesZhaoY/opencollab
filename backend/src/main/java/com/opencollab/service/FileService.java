@@ -30,6 +30,8 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -205,23 +207,17 @@ public class FileService {
         if ("markdown".equals(type) || "word".equals(type)) {
             file.setContent(serialized);
         }
+        // The relay server cannot restore Yjs snapshots. Keeping a full CRDT state
+        // beside the canonical document duplicates data and grows with each edit.
+        file.setYdocSnapshot(null);
         file.setLastModifiedBy(userId);
         fileMapper.updateById(file);
-        fileVersionService.createSnapshot(file, userId, "手动保存");
+        if (Boolean.TRUE.equals(request.getCreateVersion())) {
+            fileVersionService.createSnapshot(file, userId, "手动保存");
+        }
         FileResponse response = toFileResponse(file, userId, loadUserMap(Collections.singletonList(file)));
         response.setSheetData(file.getSheetData());
         return response;
-    }
-
-    @Transactional
-    public void syncYdoc(Long fileId, byte[] body, Long userId) {
-        File file = requireExisting(fileId);
-        if (Boolean.TRUE.equals(file.getIsDeleted()) || !hasWriteAccess(file, userId)) {
-            throw new UnauthorizedException("您没有编辑该文件的权限");
-        }
-        file.setYdocSnapshot(Base64.encodeBase64String(body));
-        file.setLastModifiedBy(userId);
-        fileMapper.updateById(file);
     }
 
     @Transactional
@@ -264,12 +260,9 @@ public class FileService {
             throw new UnauthorizedException("您没有访问该文件的权限");
         }
         String type = file.getDocumentType();
-        String name = file.getName() != null ? file.getName() : "download";
+        String name = getDownloadFilename(file);
         if ("excel".equals(type)) {
             byte[] bytes = buildMinimalXlsx(file.getSheetData());
-            if (!name.toLowerCase().endsWith(".xlsx") && !name.toLowerCase().endsWith(".xls")) {
-                name = name + ".xlsx";
-            }
             return new DownloadPayload(bytes, name, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         }
         String text = file.getSheetData() != null ? file.getSheetData()
@@ -277,6 +270,27 @@ public class FileService {
         String contentType = "markdown".equals(type) ? "text/markdown; charset=utf-8"
                 : ("word".equals(type) ? "application/json; charset=utf-8" : "text/plain; charset=utf-8");
         return new DownloadPayload(text.getBytes(StandardCharsets.UTF_8), name, contentType);
+    }
+
+    @Transactional(readOnly = true)
+    public String getDownloadFilename(Long fileId, Long userId) {
+        File file = requireExisting(fileId);
+        if (Boolean.TRUE.equals(file.getIsDeleted()) || !hasAccess(file, userId)) {
+            throw new UnauthorizedException("您没有访问该文件的权限");
+        }
+        return getDownloadFilename(file);
+    }
+
+    private String getDownloadFilename(File file) {
+        String originalName = file.getName() == null || file.getName().trim().isEmpty() ? "download" : file.getName();
+        int extensionIndex = originalName.lastIndexOf('.');
+        String baseName = extensionIndex > 0 ? originalName.substring(0, extensionIndex) : originalName;
+        String extension = extensionIndex > 0 ? originalName.substring(extensionIndex) : "";
+        if ("excel".equals(file.getDocumentType())) {
+            extension = ".xlsx";
+        }
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
+        return baseName + "-V" + fileVersionService.getLatestVersionNumber(file.getId()) + "-" + timestamp + extension;
     }
 
     @Transactional(readOnly = true)

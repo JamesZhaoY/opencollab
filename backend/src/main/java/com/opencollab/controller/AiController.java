@@ -3,9 +3,11 @@ package com.opencollab.controller;
 import com.opencollab.dto.AiChatRequest;
 import com.opencollab.dto.Result;
 import com.opencollab.service.AiService;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -29,5 +31,14 @@ public class AiController {
             @Valid @RequestBody AiChatRequest request) {
         String reply = aiService.chat(request);
         return ResponseEntity.ok(Result.success(reply));
+    }
+
+    @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public ResponseEntity<StreamingResponseBody> stream(
+            @AuthenticationPrincipal UserDetails userDetails,
+            @Valid @RequestBody AiChatRequest request) {
+        return ResponseEntity.ok()
+                .contentType(MediaType.TEXT_EVENT_STREAM)
+                .body(outputStream -> aiService.stream(request, outputStream));
     }
 }

@@ -7,7 +7,7 @@ OpenCollab 是面向团队内部使用的在线协作文档平台，支持 Markd
 | 层级 | 主要技术 |
 | --- | --- |
 | 前端 | React 18、TypeScript、Vite、Zustand |
-| 文档编辑 | Univer、canvas-editor、Yjs |
+| 文档编辑 | Univer、Milkdown、canvas-editor、Yjs |
 | 后端 | Java 8、Spring Boot 2.7、Spring Security、MyBatis-Plus |
 | 数据 | MySQL 8、Flyway、Redis |
 | 部署 | Docker Compose、Nginx |
@@ -39,7 +39,7 @@ docker-compose.yml    MySQL、Redis、后端和前端服务编排
 ### 1. 获取代码
 
 ```bash
-git clone -b V1.0 https://github.com/JamesZhaoY/opencollab.git
+git clone -b v2026.07.16 https://github.com/JamesZhaoY/opencollab.git
 cd opencollab
 ```
 
@@ -58,10 +58,11 @@ JWT_SECRET=replace-with-a-long-random-secret
 REDIS_PASSWORD=
 APP_ALLOWED_ORIGINS=http://localhost:5173,http://localhost
 
-# AI 助手（可选；使用 Ollama 等本地模型时可留空 AI_API_KEY）
-AI_BASE_URL=https://apihub.agnes-ai.com/v1/chat/completions
-AI_API_KEY=
-AI_MODEL=agnes-2.0-flash
+# AI 助手（可同时配置；在聊天面板中切换）
+OLLAMA_BASE_URL=http://host.docker.internal:11434/v1/chat/completions
+OLLAMA_MODEL=qwen2.5:3b
+AGNES_API_KEY=
+AGNES_MODEL=agnes-2.0-flash
 ```
 
 生产环境务必使用随机的数据库密码和 JWT 密钥，并将 `APP_ALLOWED_ORIGINS` 修改为实际前端域名。
@@ -114,6 +115,13 @@ npm run dev
 
 Vite 开发服务器运行在 `5173` 端口，并将 `/api`、`/ws`、`/uploads` 代理到 `127.0.0.1:8000`。
 
+## 协作与保存
+
+- Markdown 使用 Milkdown 提供所见即所得编辑与代码高亮；Word 和 Markdown 的文本协作通过 Yjs 实时同步。
+- Excel 通过 WebSocket 分发工作簿快照，并按单元格差量更新远端表格，不会重建整个编辑器组件。
+- Excel 用户进入单元格编辑状态时会创建临时协作锁；其他用户会看到“用户名正在编辑 A1”，且无法同时编辑该单元格。编辑结束或连接断开后锁会自动释放。
+- 自动保存只更新当前文档；点击“保存版本”才会生成可恢复的历史快照。下载文件名包含原始文件名、版本号和下载时间。
+
 ## 数据库与账号
 
 数据库结构由 Flyway 自动迁移，脚本位于 `backend/src/main/resources/db/migration`。后端同时包含 `flyway-core` 与 `flyway-mysql`，用于支持 MySQL 8。
@@ -133,21 +141,23 @@ UPDATE users SET role = 'admin' WHERE username = '<用户名>';
 
 前端提供全局可拖拽的 AI 办公助手悬浮按钮，支持在任意页面发起对话；在文档编辑器等页面会自动把当前文件内容作为上下文一并发送给模型。后端通过 `POST /api/ai/chat` 代理到兼容 OpenAI 的聊天补全接口，API Key 仅保存在服务端，不会暴露给浏览器。
 
-功能默认关闭，需通过 `.env` 中的以下变量开启：
+聊天面板可在“本地 Ollama”与“Agnes 2.0 Flash”之间切换；密钥始终只保存在服务端。使用前在 `.env` 中按需配置：
 
 ```dotenv
-# 聊天补全接口地址（兼容 OpenAI 格式）
-AI_BASE_URL=https://apihub.agnes-ai.com/v1/chat/completions
-# 服务端 API Key；使用 Ollama 等无需鉴权的本地模型时可留空
-AI_API_KEY=
-# 模型名称
-AI_MODEL=agnes-2.0-flash
+# 本地 Ollama（Ollama 开启 OpenAI 兼容接口后使用；无需 API Key）
+OLLAMA_BASE_URL=http://host.docker.internal:11434/v1/chat/completions
+OLLAMA_MODEL=qwen2.5:3b
+
+# Agnes 2.0 Flash（必须填写 API Key）
+AGNES_BASE_URL=https://apihub.agnes-ai.com/v1/chat/completions
+AGNES_API_KEY=your_agnes_api_key
+AGNES_MODEL=agnes-2.0-flash
 ```
 
 说明：
 
-- 后端使用 `RestTemplate` 调用 `AI_BASE_URL`，并在请求头携带 `Authorization: Bearer <AI_API_KEY>`（Key 为空时不携带）。
-- 未配置 `AI_API_KEY` 且接口为 OpenAI 域名时会返回明确报错；本地模型（如 Ollama）可留空 Key。
+- 后端按聊天面板所选服务调用对应的 OpenAI 兼容端点，Agnes 的 `AGNES_API_KEY` 不会发送给浏览器。
+- Agnes 2.0 Flash 使用 `https://apihub.agnes-ai.com/v1/chat/completions`、模型名 `agnes-2.0-flash`，并支持 `stream: true`；本地 Ollama 可留空 API Key。
 - 请求体包含固定的企业办公系统提示词与可选的文件上下文，模型仅用于办公相关问题解答。
 
 ## 生产部署注意事项

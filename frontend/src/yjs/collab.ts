@@ -1,7 +1,6 @@
-import axios from 'axios';
 import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
-import { clearAuthTokens } from '@/services/sessionAuth';
+import type { Awareness } from 'y-protocols/awareness';
 
 export interface CollaborationUser {
   id: number;
@@ -10,40 +9,18 @@ export interface CollaborationUser {
 
 /**
  * Manages a Yjs document for a single file.
- * Handles WebSocket connection, reconnection, and persistence.
+ * Handles WebSocket connection, reconnection, and awareness.
  */
 export class CollaborationManager {
   private doc: Y.Doc;
   private provider: WebsocketProvider | null = null;
   private onSyncCallback: ((isSynced: boolean) => void) | null = null;
-  private onUpdateCallback: ((update: Uint8Array) => void) | null = null;
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 10;
-  private persistTimer: ReturnType<typeof setInterval> | null = null;
-  private onTokenExpiredCallback?: () => void;
   private currentUser: CollaborationUser | null = null;
-  private canPersist = false;
 
-  constructor(public fileId: number, tokenGetter: () => string | null) {
+  constructor(public fileId: number) {
     this.doc = new Y.Doc();
-    this.onTokenExpiredCallback = () => {
-      clearAuthTokens();
-      // Try SPA navigation first
-      const el = document.getElementById('auth-token-expired');
-      if (el) el.dispatchEvent(new CustomEvent('auth:token-expired'));
-      // Fallback: hard redirect if SPA nav didn't happen (e.g. component unmounted)
-      setTimeout(() => {
-        if (window.location.pathname !== '/login') {
-          window.location.href = '/login';
-        }
-      }, 100);
-    };
-    this.setupPersistence(tokenGetter);
-    this.doc.on('update', (update: Uint8Array) => {
-      if (this.onUpdateCallback) {
-        this.onUpdateCallback(update);
-      }
-    });
   }
 
   /** Connect to the WebSocket server for real-time collaboration. */
@@ -115,10 +92,6 @@ export class CollaborationManager {
 
   /** Disconnect from the collaboration server. */
   disconnect(): void {
-    if (this.persistTimer) {
-      clearInterval(this.persistTimer);
-      this.persistTimer = null;
-    }
     if (this.provider) {
       try {
         this.provider.awareness.setLocalState(null);
@@ -134,11 +107,6 @@ export class CollaborationManager {
   /** Get the underlying Yjs document for editor collaboration metadata. */
   getDoc(): Y.Doc {
     return this.doc;
-  }
-
-  /** Register a callback for Yjs document updates. */
-  onUpdate(callback: (update: Uint8Array) => void): void {
-    this.onUpdateCallback = callback;
   }
 
   /** Get a collaborative text field from the document. */
@@ -162,13 +130,8 @@ export class CollaborationManager {
     this.applyAwarenessUser();
   }
 
-  /** Enable Yjs snapshot persistence only for users with edit access. */
-  setCanPersist(canPersist: boolean): void {
-    this.canPersist = canPersist;
-  }
-
   /** Get the Yjs awareness for collaborator presence. */
-  getAwareness(): { on: (event: string, callback: (...args: unknown[]) => void) => void; off: (event: string, callback: (...args: unknown[]) => void) => void; getStates: () => Map<number, unknown> } {
+  getAwareness(): Awareness {
     if (!this.provider) {
       throw new Error('Provider not initialized. Call connect() first.');
     }
@@ -184,34 +147,4 @@ export class CollaborationManager {
     this.provider.awareness.setLocalStateField('username', this.currentUser.username);
   }
 
-  /** Persist document state to server periodically. */
-  private setupPersistence(tokenGetter: () => string | null): void {
-    this.persistTimer = setInterval(() => {
-      if (!this.canPersist) return;
-      const snapshot = Y.encodeStateAsUpdate(this.doc);
-      const token = tokenGetter();
-      if (!token) {
-        this.onTokenExpiredCallback?.();
-        return;
-      }
-      const config = {
-        url: `/api/files/${this.fileId}/sync`,
-        method: 'post',
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          'Authorization': `Bearer ${token}`,
-        },
-        data: snapshot,
-        responseType: 'blob' as const,
-      };
-      axios(config)
-        .catch((err) => {
-          if (axios.isAxiosError(err) && err.response?.status === 401) {
-            this.onTokenExpiredCallback?.();
-          } else {
-            console.error('Persist failed:', err);
-          }
-        });
-    }, 30000);
-  }
 }
