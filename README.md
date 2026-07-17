@@ -31,111 +31,69 @@ flowchart LR
 backend/              Spring Boot API、WebSocket 与 Flyway 迁移脚本
 frontend/             React 单页应用与文档编辑器
 nginx/                静态资源、API 和 WebSocket 反向代理配置
-docker-compose.yml    MySQL、Redis、后端和前端服务编排
+deploy/intranet/      内网部署的后端配置文件模板
+docker-compose.yml    仅用于本地开发的一组依赖服务编排
 ```
 
-## Docker 部署
+## 内网部署（使用既有 MySQL 与 Redis）
 
-### 1. 获取代码
+内网环境只需要导入两个镜像：`opencollab-backend` 和 `opencollab-frontend`。MySQL、Redis、Ollama 等服务不包含在镜像内，后端从挂载的配置文件读取它们的地址和凭据。
+
+### 1. 在可联网的打包机构建并导出
 
 ```bash
-git clone -b v2026.07.16 https://github.com/JamesZhaoY/opencollab.git
-cd opencollab
+docker build -f backend/Dockerfile -t opencollab-backend:2026.07.16 backend
+docker build -f frontend/Dockerfile -t opencollab-frontend:2026.07.16 .
+docker save -o opencollab-images-2026.07.16.tar \
+  opencollab-backend:2026.07.16 \
+  opencollab-frontend:2026.07.16
 ```
 
-### 2. 创建环境变量文件
+将 `opencollab-images-2026.07.16.tar` 传到内网服务器。
 
-`docker-compose.yml` 会读取根目录的 `.env`。请创建该文件并替换所有示例密码与密钥：
+### 2. 在内网服务器准备配置文件
 
-```dotenv
-MYSQL_ROOT_PASSWORD=replace-with-a-strong-root-password
-DB_NAME=excel_collab
-DB_USER=collab_user
-DB_PASSWORD=replace-with-a-strong-db-password
-
-JWT_SECRET=replace-with-a-long-random-secret
-
-REDIS_PASSWORD=
-APP_ALLOWED_ORIGINS=http://localhost:5173,http://localhost
-
-# AI 助手（可同时配置；在聊天面板中切换）
-OLLAMA_BASE_URL=http://host.docker.internal:11434/v1/chat/completions
-OLLAMA_MODEL=qwen2.5:3b
-AGNES_API_KEY=
-AGNES_MODEL=agnes-2.0-flash
-```
-
-生产环境务必使用随机的数据库密码和 JWT 密钥，并将 `APP_ALLOWED_ORIGINS` 修改为实际前端域名。
-
-### 3. 构建并启动
+复制 [application.yml.example](deploy/intranet/application.yml.example) 为服务器本地配置文件，并替换 MySQL、Redis、JWT、域名和 AI 服务信息：
 
 ```bash
-docker compose up -d --build
-docker compose ps
+mkdir -p /opt/opencollab/config
+cp deploy/intranet/application.yml.example /opt/opencollab/config/application.yml
+chmod 600 /opt/opencollab/config/application.yml
 ```
 
-首次执行会拉取基础镜像并构建前后端。服务正常时，`mysql`、`redis`、`backend` 与 `frontend` 均应为 `Up`，其中 MySQL 状态还应显示 `healthy`。
+目标数据库需要预先创建；MySQL 用户需要拥有该库的建表、修改表和读写权限，供 Flyway 首次迁移与正常业务使用；Redis 需允许内网服务器访问。
 
-默认访问地址：
-
-- 前端：`http://localhost`
-- 后端 API：`http://localhost:8000/api`
-- 后端 WebSocket：`ws://localhost/ws/{fileId}?token=<access_token>`
-
-### 4. 查看日志
+### 3. 在内网服务器导入并启动
 
 ```bash
-docker compose logs -f backend
-docker compose logs -f frontend
-docker compose ps
-```
+docker load -i opencollab-images-2026.07.16.tar
+docker network create opencollab-net
 
-## 单镜像离线部署
-
-`deploy/all-in-one/Dockerfile` 将前端、后端、Nginx、MySQL 与 Redis 打包到**同一个镜像、同一个容器**中。容器只提供 HTTP `80` 端口；宿主机端口可自由映射。容器内由 Supervisor 管理各进程，不再需要 Docker Compose、外部 MySQL、Redis 或 Nginx。
-
-构建镜像：
-
-```bash
-docker build \
-  -f deploy/all-in-one/Dockerfile \
-  -t opencollab-all-in-one:2026.07.16 .
-```
-
-以宿主机 `80` 端口启动：
-
-```bash
-docker run -d --name opencollab \
+docker run -d --name opencollab-backend \
   --restart unless-stopped \
-  -p 80:80 \
-  -e MYSQL_ROOT_PASSWORD='替换为强密码' \
-  -e DB_PASSWORD='替换为数据库强密码' \
-  -e REDIS_PASSWORD='替换为 Redis 强密码' \
-  -e JWT_SECRET='替换为足够长的随机密钥' \
-  -e APP_ALLOWED_ORIGINS='http://服务器IP或域名' \
-  -v opencollab_mysql:/var/lib/mysql \
-  -v opencollab_redis:/var/lib/redis \
+  --network opencollab-net \
+  --network-alias backend \
+  -v /opt/opencollab/config/application.yml:/app/config/application.yml:ro \
   -v opencollab_uploads:/app/uploads \
-  opencollab-all-in-one:2026.07.16
+  opencollab-backend:2026.07.16
+
+docker run -d --name opencollab-frontend \
+  --restart unless-stopped \
+  --network opencollab-net \
+  -p 80:80 \
+  opencollab-frontend:2026.07.16
 ```
 
-如需使用自定义端口，只改宿主机侧端口，例如 `-p 8080:80` 后访问 `http://服务器IP:8080`。`MYSQL_ROOT_PASSWORD`、`DB_PASSWORD`、`REDIS_PASSWORD` 与 `JWT_SECRET` 均为必填项；`DB_NAME`（默认 `excel_collab`）和 `DB_USER`（默认 `opencollab`）可按需覆盖。
+如需使用自定义端口，将最后一条命令中的 `-p 80:80` 改为如 `-p 8080:80`。浏览器访问 `http://内网服务器IP:8080`。
 
-将镜像带入无网络内网时，在打包机导出并在目标服务器导入：
+`/app/config/application.yml` 会在后端启动时作为外部 Spring 配置加载，实际密码和密钥不进入镜像，也无需设置为 Docker 环境变量。
 
-```bash
-docker save -o opencollab-all-in-one-2026.07.16.tar opencollab-all-in-one:2026.07.16
-# 将 tar 文件传到内网服务器后执行
-docker load -i opencollab-all-in-one-2026.07.16.tar
-```
-
-首次运行会初始化内置 MySQL 的数据库和账号；三个 Docker volume 必须长期保留，否则重建容器会丢失数据库、Redis 持久化数据及上传文件。升级时使用新镜像重新 `docker run`，并挂载同名 volume 即可保留业务数据。
-
-AI 模型服务不在该镜像内运行。使用外部 Ollama 时，在启动命令中额外传入 `OLLAMA_BASE_URL` 和 `OLLAMA_MODEL`；也可传入 `AGNES_API_KEY` 使用 Agnes：
+### 4. 验证与日志
 
 ```bash
--e OLLAMA_BASE_URL='http://内网模型服务器:11434/v1/chat/completions' \
--e OLLAMA_MODEL='qwen2.5:3b'
+docker ps --filter name=opencollab
+docker logs -f opencollab-backend
+docker logs -f opencollab-frontend
 ```
 
 ## 本地开发
@@ -176,10 +134,10 @@ Vite 开发服务器运行在 `5173` 端口，并将 `/api`、`/ws`、`/uploads`
 
 数据库结构由 Flyway 自动迁移，脚本位于 `backend/src/main/resources/db/migration`。后端同时包含 `flyway-core` 与 `flyway-mysql`，用于支持 MySQL 8。
 
-系统不创建默认管理员。请先在登录页面注册账号；注册用户默认是普通用户。如需授予管理员角色，在 MySQL 容器中执行：
+系统不创建默认管理员。请先在登录页面注册账号；注册用户默认是普通用户。如需授予管理员角色，连接既有 MySQL 后执行：
 
 ```bash
-docker compose exec mysql mysql -u root -p
+mysql -h <MySQL地址> -u <管理员账号> -p
 ```
 
 ```sql
@@ -191,17 +149,16 @@ UPDATE users SET role = 'admin' WHERE username = '<用户名>';
 
 前端提供全局可拖拽的 AI 办公助手悬浮按钮，支持在任意页面发起对话；在文档编辑器等页面会自动把当前文件内容作为上下文一并发送给模型。后端通过 `POST /api/ai/chat` 代理到兼容 OpenAI 的聊天补全接口，API Key 仅保存在服务端，不会暴露给浏览器。
 
-聊天面板可在“本地 Ollama”与“Agnes 2.0 Flash”之间切换；密钥始终只保存在服务端。使用前在 `.env` 中按需配置：
+聊天面板可在“本地 Ollama”与“Agnes 2.0 Flash”之间切换；密钥始终只保存在服务端。内网部署时，在挂载的 `application.yml` 中按需配置：
 
-```dotenv
-# 本地 Ollama（Ollama 开启 OpenAI 兼容接口后使用；无需 API Key）
-OLLAMA_BASE_URL=http://host.docker.internal:11434/v1/chat/completions
-OLLAMA_MODEL=qwen2.5:3b
-
-# Agnes 2.0 Flash（必须填写 API Key）
-AGNES_BASE_URL=https://apihub.agnes-ai.com/v1/chat/completions
-AGNES_API_KEY=your_agnes_api_key
-AGNES_MODEL=agnes-2.0-flash
+```yaml
+ai:
+  ollama:
+    base-url: http://ollama.intranet.local:11434/v1/chat/completions
+    model: 'qwen2.5:3b'
+  agnes:
+    api-key: your_agnes_api_key
+    model: agnes-2.0-flash
 ```
 
 说明：
@@ -213,7 +170,7 @@ AGNES_MODEL=agnes-2.0-flash
 ## 生产部署注意事项
 
 
-- 为 MySQL、Redis 和上传目录保留 Docker volume，避免容器重建后丢失数据。
+- 为后端上传目录保留 Docker volume，避免容器重建后丢失文件；MySQL 与 Redis 的数据保留策略由既有服务负责。
 - Nginx 配置已包含 WebSocket 升级头；部署 HTTPS 时，浏览器端会自动使用 `wss`。
 - 单个上传文件最大为 50 MB。
 - 不要将 `.env`、数据库备份或构建产物提交到仓库。
