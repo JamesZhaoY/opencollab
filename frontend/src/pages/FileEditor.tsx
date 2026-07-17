@@ -501,8 +501,16 @@ export default function FileEditorPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(lock),
     }).then(async (response) => {
-      if (!response.ok) throw new Error('锁定请求失败');
-      return response.json() as Promise<{ acquired: boolean; ownerUsername?: string }>;
+      const payload = await response.json().catch(() => ({})) as {
+        acquired?: boolean;
+        ownerUsername?: string;
+        detail?: string;
+        message?: string;
+      };
+      if (!response.ok) {
+        throw new Error(payload.detail || payload.message || `锁定请求失败（HTTP ${response.status}）`);
+      }
+      return payload as { acquired: boolean; ownerUsername?: string };
     }).then((result) => {
       if (!sameExcelLock(localExcelLockRef.current, lock)) {
         if (result.acquired) {
@@ -536,10 +544,12 @@ export default function FileEditorPage() {
           });
       };
       excelLockRenewTimerRef.current = setTimeout(renew, 20_000);
-    }).catch(() => {
+    }).catch((error) => {
       if (sameExcelLock(localExcelLockRef.current, lock)) {
         localExcelLockRef.current = null;
-        setExcelLockHint('无法确认单元格锁定，请稍后重试');
+        const message = error instanceof Error ? error.message : '无法确认单元格锁定，请稍后重试';
+        console.error('Excel 单元格锁定失败:', error);
+        setExcelLockHint(message);
       }
     });
   };
