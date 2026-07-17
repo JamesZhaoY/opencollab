@@ -92,14 +92,20 @@ docker compose ps
 
 ## 单镜像离线部署
 
-`deploy/all-in-one/Dockerfile` 将前端、后端、Nginx、MySQL、Redis、Ollama 与一个 Ollama 模型打包到**同一个镜像、同一个容器**中。容器只提供 HTTP `80` 端口；宿主机端口可自由映射。容器内由 Supervisor 管理各进程，不再需要 Docker Compose、外部 MySQL、Redis 或 Nginx。
+`deploy/all-in-one/Dockerfile` 将前端、后端、Nginx、MySQL、Redis、Ollama 与本地提供的 Ollama 模型打包到**同一个镜像、同一个容器**中。容器只提供 HTTP `80` 端口；宿主机端口可自由映射。容器内由 Supervisor 管理各进程，不再需要 Docker Compose、外部 MySQL、Redis 或 Nginx。
 
-在有网络的打包机上构建。默认内置 `qwen2.5:3b`，也可在构建时指定已发布的其他 Ollama 模型：
+打包机只需能够从远程拉取基础镜像（含官方 Ollama 运行程序），**不会在构建时联网下载模型**。先将已有 Ollama 模型目录完整复制到项目的 `deploy/all-in-one/models/`；必须保留 `manifests/` 与 `blobs/` 两级目录结构：
+
+```bash
+mkdir -p deploy/all-in-one/models
+cp -R /本地模型目录/. deploy/all-in-one/models/
+```
+
+然后构建镜像：
 
 ```bash
 docker build \
   -f deploy/all-in-one/Dockerfile \
-  --build-arg OLLAMA_MODEL=qwen2.5:3b \
   -t opencollab-all-in-one:2026.07.16 .
 ```
 
@@ -114,15 +120,17 @@ docker run -d --name opencollab \
   -e REDIS_PASSWORD='替换为 Redis 强密码' \
   -e JWT_SECRET='替换为足够长的随机密钥' \
   -e APP_ALLOWED_ORIGINS='http://服务器IP或域名' \
+  -e OLLAMA_MODEL='本地模型对应的名称' \
   -v opencollab_mysql:/var/lib/mysql \
   -v opencollab_redis:/var/lib/redis \
   -v opencollab_uploads:/app/uploads \
+  -v opencollab_models:/opt/ollama/models \
   opencollab-all-in-one:2026.07.16
 ```
 
-如需使用自定义端口，只改宿主机侧端口，例如 `-p 8080:80` 后访问 `http://服务器IP:8080`。`MYSQL_ROOT_PASSWORD`、`DB_PASSWORD`、`REDIS_PASSWORD` 与 `JWT_SECRET` 均为必填项；`DB_NAME`（默认 `excel_collab`）和 `DB_USER`（默认 `opencollab`）可按需覆盖。
+如需使用自定义端口，只改宿主机侧端口，例如 `-p 8080:80` 后访问 `http://服务器IP:8080`。`MYSQL_ROOT_PASSWORD`、`DB_PASSWORD`、`REDIS_PASSWORD` 与 `JWT_SECRET` 均为必填项；`DB_NAME`（默认 `excel_collab`）和 `DB_USER`（默认 `opencollab`）可按需覆盖。`OLLAMA_MODEL` 必须与复制进来的模型清单名称一致，默认值为 `qwen2.5:3b`。
 
-构建过程会下载 Ollama 和模型，镜像体积会随模型而增长。将镜像带入无网络内网时，在打包机导出并在目标服务器导入：
+模型文件会随镜像体积增长。将镜像带入无网络内网时，在打包机导出并在目标服务器导入：
 
 ```bash
 docker save -o opencollab-all-in-one-2026.07.16.tar opencollab-all-in-one:2026.07.16
@@ -130,7 +138,7 @@ docker save -o opencollab-all-in-one-2026.07.16.tar opencollab-all-in-one:2026.0
 docker load -i opencollab-all-in-one-2026.07.16.tar
 ```
 
-首次运行会初始化内置 MySQL 的数据库和账号；三个 Docker volume 必须长期保留，否则重建容器会丢失数据库、Redis 持久化数据及上传文件。升级时使用新镜像重新 `docker run`，并挂载同名 volume 即可保留业务数据。
+首次运行会初始化内置 MySQL 的数据库和账号；四个 Docker volume 必须长期保留，否则重建容器会丢失数据库、Redis 持久化数据、上传文件及模型缓存。升级时使用新镜像重新 `docker run`，并挂载同名 volume 即可保留业务数据。若希望运行时直接使用服务器的本地模型目录，可额外挂载 `-v /本地模型目录:/opt/ollama/models`；该挂载会覆盖镜像内置模型。
 
 ## 本地开发
 

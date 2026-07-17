@@ -1,0 +1,3 @@
+.env
+deploy/all-in-one/models/*
+!deploy/all-in-one/models/.gitkeep
