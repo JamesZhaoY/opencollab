@@ -12,15 +12,9 @@ COPY backend/pom.xml ./
 COPY backend/src ./src
 RUN mvn -q -DskipTests package
 
-# Pull the Ollama runtime from its official image. Model files are copied from
-# deploy/all-in-one/models in the local build context, never downloaded here.
-FROM ollama/ollama:latest AS ollama-runtime
-
 FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
-    OLLAMA_MODELS=/opt/ollama/models \
-    OLLAMA_MODEL=qwen2.5:3b \
     DB_HOST=127.0.0.1 \
     DB_PORT=3306 \
     DB_NAME=excel_collab \
@@ -28,7 +22,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     REDIS_HOST=127.0.0.1 \
     REDIS_PORT=6379 \
     UPLOAD_DIR=/app/uploads \
-    OLLAMA_BASE_URL=http://127.0.0.1:11434/v1/chat/completions \
     APP_ALLOWED_ORIGINS=http://localhost \
     JAVA_TOOL_OPTIONS=-Duser.timezone=Asia/Shanghai
 
@@ -37,13 +30,10 @@ RUN apt-get update \
        ca-certificates curl nginx mysql-server redis-server supervisor tzdata openjdk-17-jre-headless \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/nginx/sites-enabled/default \
-    && mkdir -p /app/uploads /opt/ollama/models /var/run/mysqld \
+    && mkdir -p /app/uploads /var/run/mysqld \
     && chown -R mysql:mysql /var/lib/mysql /var/run/mysqld \
     && chown -R redis:redis /var/lib/redis
 
-COPY --from=ollama-runtime /bin/ollama /usr/local/bin/ollama
-# Keep the Ollama manifests/ and blobs/ directory structure intact.
-COPY deploy/all-in-one/models/ /opt/ollama/models/
 COPY --from=backend-build /app/target/opencollab-backend-*.jar /app/app.jar
 COPY --from=frontend-build /app/dist/ /usr/share/nginx/html/
 COPY deploy/all-in-one/supervisord.conf /etc/supervisor/conf.d/opencollab.conf
@@ -52,5 +42,5 @@ COPY deploy/all-in-one/entrypoint.sh /usr/local/bin/opencollab-entrypoint
 RUN chmod +x /usr/local/bin/opencollab-entrypoint
 
 EXPOSE 80
-VOLUME ["/var/lib/mysql", "/var/lib/redis", "/app/uploads", "/opt/ollama/models"]
+VOLUME ["/var/lib/mysql", "/var/lib/redis", "/app/uploads"]
 ENTRYPOINT ["/usr/local/bin/opencollab-entrypoint"]
