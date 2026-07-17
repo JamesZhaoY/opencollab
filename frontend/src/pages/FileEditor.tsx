@@ -67,6 +67,10 @@ type ExcelPatch = {
   changes: ExcelCellPatch[];
   dimensions: Array<{ sheetId: string; rowCount?: number; columnCount?: number }>;
 };
+
+function excelLockPayload(lock: ExcelLockTarget) {
+  return { sheet_id: lock.sheetId, row: lock.row, column: lock.column };
+}
 type DocxCommand = CanvasEditorHandle['command'] & {
   executeImportDocx?: (options: { arrayBuffer: ArrayBuffer }) => Promise<void> | void;
   executeExportDocx?: (options: { fileName: string }) => void;
@@ -484,7 +488,7 @@ export default function FileEditorPage() {
     void authFetch(`/api/files/${currentFileId}/excel-locks/release`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(lock),
+      body: JSON.stringify(excelLockPayload(lock)),
     });
   };
 
@@ -499,7 +503,7 @@ export default function FileEditorPage() {
     void authFetch(`/api/files/${currentFileId}/excel-locks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(lock),
+      body: JSON.stringify(excelLockPayload(lock)),
     }).then(async (response) => {
       const payload = await response.json().catch(() => ({})) as {
         acquired?: boolean;
@@ -515,7 +519,7 @@ export default function FileEditorPage() {
       if (!sameExcelLock(localExcelLockRef.current, lock)) {
         if (result.acquired) {
           void authFetch(`/api/files/${currentFileId}/excel-locks/release`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(lock),
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(excelLockPayload(lock)),
           });
         }
         return;
@@ -531,7 +535,7 @@ export default function FileEditorPage() {
       const renew = () => {
         if (!sameExcelLock(localExcelLockRef.current, lock)) return;
         void authFetch(`/api/files/${currentFileId}/excel-locks`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(lock),
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(excelLockPayload(lock)),
         }).then((response) => response.ok ? response.json() as Promise<{ acquired: boolean }> : { acquired: false })
           .then((renewed) => {
             if (!renewed.acquired && sameExcelLock(localExcelLockRef.current, lock)) {
