@@ -1,14 +1,19 @@
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import LoginPage from '@/pages/Login';
 import FileListPage from '@/pages/FileList';
-import FileEditorPage from '@/pages/FileEditor';
-import AdminUsersPage from '@/pages/AdminUsers';
-import ChangePasswordPage from '@/pages/ChangePassword';
 import AuthRedirectHandler from '@/components/AuthRedirectHandler';
 import UserDock from '@/components/UserDock';
 import AiAssistant from '@/components/AiAssistant';
+
+const FileEditorPage = lazy(() => import('@/pages/FileEditor'));
+const AdminUsersPage = lazy(() => import('@/pages/AdminUsers'));
+const ChangePasswordPage = lazy(() => import('@/pages/ChangePassword'));
+
+function RouteLoading({ label = '正在加载页面...' }: { label?: string }) {
+  return <div className="route-loading">{label}</div>;
+}
 
 export default function App() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -35,11 +40,17 @@ export default function App() {
         />
         <Route
           path="/editor/:fileId"
-          element={isAuthenticated ? <FileEditorPage /> : <Navigate to="/login" />}
+          element={isAuthenticated ? (
+            <Suspense fallback={<RouteLoading label="正在加载编辑器..." />}>
+              <FileEditorPage />
+            </Suspense>
+          ) : <Navigate to="/login" />}
         />
         <Route
           path="/settings/password"
-          element={isAuthenticated ? <ChangePasswordPage /> : <Navigate to="/login" />}
+          element={isAuthenticated ? (
+            <Suspense fallback={<RouteLoading />}><ChangePasswordPage /></Suspense>
+          ) : <Navigate to="/login" />}
         />
         <Route
           path="/admin/users"
@@ -47,7 +58,7 @@ export default function App() {
             isAuthenticated
               ? user
                 ? user.role === 'admin'
-                  ? <AdminUsersPage />
+                  ? <Suspense fallback={<RouteLoading />}><AdminUsersPage /></Suspense>
                   : <Navigate to="/files" />
                 : <div className="route-loading">正在加载账号信息...</div>
               : <Navigate to="/login" />

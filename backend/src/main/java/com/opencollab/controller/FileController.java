@@ -4,6 +4,7 @@ import com.opencollab.dto.*;
 import com.opencollab.entity.User;
 import com.opencollab.security.CustomUserDetailsService;
 import com.opencollab.service.CommentService;
+import com.opencollab.service.ExcelLockService;
 import com.opencollab.service.FileService;
 import com.opencollab.service.PermissionService;
 import com.opencollab.service.UserService;
@@ -29,17 +30,20 @@ public class FileController {
     private final CommentService commentService;
     private final PermissionService permissionService;
     private final UserService userService;
+    private final ExcelLockService excelLockService;
 
     public FileController(FileService fileService,
                           CustomUserDetailsService userDetailsService,
                           CommentService commentService,
                           PermissionService permissionService,
-                          UserService userService) {
+                          UserService userService,
+                          ExcelLockService excelLockService) {
         this.fileService = fileService;
         this.userDetailsService = userDetailsService;
         this.commentService = commentService;
         this.permissionService = permissionService;
         this.userService = userService;
+        this.excelLockService = excelLockService;
     }
 
     private User currentUser(UserDetails userDetails) {
@@ -156,6 +160,29 @@ public class FileController {
     public Result<String> getDownloadFilename(@PathVariable Long id,
                                               @AuthenticationPrincipal UserDetails userDetails) {
         return Result.success(fileService.getDownloadFilename(id, currentUser(userDetails).getId()));
+    }
+
+    @PostMapping("/{id}/excel-locks")
+    public Result<ExcelLockResponse> acquireExcelLock(@PathVariable Long id,
+                                                       @Valid @RequestBody ExcelLockRequest request,
+                                                       @AuthenticationPrincipal UserDetails userDetails) {
+        User user = currentUser(userDetails);
+        if (!fileService.hasWriteAccess(fileService.getFileEntityById(id, user.getId()), user.getId())) {
+            throw new com.opencollab.exception.UnauthorizedException("您没有编辑该文件的权限");
+        }
+        return Result.success(excelLockService.acquire(id, request.getSheetId(), request.getRow(), request.getColumn(), user));
+    }
+
+    @PostMapping("/{id}/excel-locks/release")
+    public Result<Void> releaseExcelLock(@PathVariable Long id,
+                                         @Valid @RequestBody ExcelLockRequest request,
+                                         @AuthenticationPrincipal UserDetails userDetails) {
+        User user = currentUser(userDetails);
+        if (!fileService.hasWriteAccess(fileService.getFileEntityById(id, user.getId()), user.getId())) {
+            throw new com.opencollab.exception.UnauthorizedException("您没有编辑该文件的权限");
+        }
+        excelLockService.release(id, request.getSheetId(), request.getRow(), request.getColumn(), user);
+        return Result.success();
     }
 
     // ---------- comments ----------

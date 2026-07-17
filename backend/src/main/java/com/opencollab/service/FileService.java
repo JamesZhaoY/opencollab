@@ -367,10 +367,17 @@ public class FileService {
 
     private List<FileResponse> toFileResponses(List<File> files, Long viewerId) {
         Map<Long, User> users = loadUserMap(files);
-        return files.stream().map(f -> toFileResponse(f, viewerId, users)).collect(Collectors.toList());
+        Map<Long, String> permissions = loadPermissionMap(files, viewerId);
+        return files.stream()
+                .map(f -> toFileResponse(f, users, permissions.get(f.getId())))
+                .collect(Collectors.toList());
     }
 
     private FileResponse toFileResponse(File file, Long viewerId, Map<Long, User> users) {
+        return toFileResponse(file, users, resolvePermission(file, viewerId));
+    }
+
+    private FileResponse toFileResponse(File file, Map<Long, User> users, String currentPermission) {
         FileResponse response = new FileResponse();
         response.setId(file.getId());
         response.setName(file.getName());
@@ -381,7 +388,7 @@ public class FileService {
         response.setCreatedAt(file.getCreatedAt());
         response.setUpdatedAt(file.getUpdatedAt());
         response.setIsDeleted(file.getIsDeleted());
-        response.setCurrentPermission(resolvePermission(file, viewerId));
+        response.setCurrentPermission(currentPermission);
 
         User owner = users.get(file.getOwnerId());
         if (owner != null) {
@@ -394,6 +401,29 @@ public class FileService {
             }
         }
         return response;
+    }
+
+    /**
+     * File lists used to resolve one permission per row. Load all grants in one
+     * query instead so a workspace with many shared files stays constant-query.
+     */
+    private Map<Long, String> loadPermissionMap(List<File> files, Long viewerId) {
+        if (files.isEmpty()) return Collections.emptyMap();
+
+        Set<Long> fileIds = files.stream().map(File::getId).collect(Collectors.toSet());
+        Map<Long, String> permissions = permissionMapper.selectList(
+                        new LambdaQueryWrapper<Permission>()
+                                .eq(Permission::getUserId, viewerId)
+                                .in(Permission::getFileId, fileIds))
+                .stream()
+                .collect(Collectors.toMap(Permission::getFileId, Permission::getPermission, (a, b) -> a));
+
+        for (File file : files) {
+            if (file.getOwnerId().equals(viewerId)) {
+                permissions.put(file.getId(), "owner");
+            }
+        }
+        return permissions;
     }
 
     private Map<Long, User> loadUserMap(List<File> files) {

@@ -56,6 +56,17 @@ type ExcelCellLock = {
   row: number;
   column: number;
 };
+type ExcelLockTarget = Omit<ExcelCellLock, 'clientId' | 'username'>;
+type ExcelCellPatch = {
+  sheetId: string;
+  row: number;
+  column: number;
+  value: unknown | null;
+};
+type ExcelPatch = {
+  changes: ExcelCellPatch[];
+  dimensions: Array<{ sheetId: string; rowCount?: number; columnCount?: number }>;
+};
 type DocxCommand = CanvasEditorHandle['command'] & {
   executeImportDocx?: (options: { arrayBuffer: ArrayBuffer }) => Promise<void> | void;
   executeExportDocx?: (options: { fileName: string }) => void;
@@ -149,6 +160,44 @@ function serializeCanvasEditorValue(value: IEditorResult): string {
   });
 }
 
+/** Build a compact change set; workbook snapshots are only used for persistence. */
+function buildExcelPatch(previous: IWorkbookData, next: IWorkbookData): ExcelPatch | null {
+  if (
+    previous.sheetOrder.length !== next.sheetOrder.length
+    || previous.sheetOrder.some((sheetId, index) => sheetId !== next.sheetOrder[index])
+  ) return null;
+
+  const changes: ExcelCellPatch[] = [];
+  const dimensions: ExcelPatch['dimensions'] = [];
+  for (const sheetId of next.sheetOrder) {
+    const previousSheet = previous.sheets[sheetId];
+    const nextSheet = next.sheets[sheetId];
+    if (!previousSheet || !nextSheet) return null;
+    dimensions.push({ sheetId, rowCount: nextSheet.rowCount, columnCount: nextSheet.columnCount });
+
+    const previousCells = previousSheet.cellData || {};
+    const nextCells = nextSheet.cellData || {};
+    const coordinates = new Set<string>();
+    for (const [row, columns] of Object.entries(previousCells)) {
+      for (const column of Object.keys(columns || {})) coordinates.add(`${row}:${column}`);
+    }
+    for (const [row, columns] of Object.entries(nextCells)) {
+      for (const column of Object.keys(columns || {})) coordinates.add(`${row}:${column}`);
+    }
+    for (const coordinate of coordinates) {
+      const [rowText, columnText] = coordinate.split(':');
+      const row = Number(rowText);
+      const column = Number(columnText);
+      const previousCell = previousCells[row]?.[column];
+      const nextCell = nextCells[row]?.[column];
+      if (JSON.stringify(previousCell) !== JSON.stringify(nextCell)) {
+        changes.push({ sheetId, row, column, value: nextCell || null });
+      }
+    }
+  }
+  return { changes, dimensions };
+}
+
 /** Apply only the changed range so each Word keystroke stays a small Yjs update. */
 function replaceYTextContent(yText: Y.Text, nextValue: string) {
   const currentValue = yText.toString();
@@ -213,6 +262,10 @@ export default function FileEditorPage() {
   const savingRef = useRef(false);
   const initializedRef = useRef(false);
   const lastDataRef = useRef<string>('');
+  const lastExcelSnapshotRef = useRef<IWorkbookData | null>(null);
+  const localExcelLockRef = useRef<ExcelLockTarget | null>(null);
+  const localExcelLockGrantedRef = useRef(false);
+  const excelLockRenewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingRemoteExcelSnapshotRef = useRef<IWorkbookData | null>(null);
   const isApplyingRemoteExcelRef = useRef(false);
   const documentTypeRef = useRef<DocumentType>('excel');
@@ -246,6 +299,7 @@ export default function FileEditorPage() {
   const [versionPendingRestore, setVersionPendingRestore] = useState<FileVersion | null>(null);
   const [collaborators, setCollaborators] = useState<Map<number | string, string>>(new Map());
   const [excelLocks, setExcelLocks] = useState<ExcelCellLock[]>([]);
+  const [excelLockHint, setExcelLockHint] = useState('');
   const [editorError, setEditorError] = useState<string | null>(null);
   const [wordPluginBusy, setWordPluginBusy] = useState(false);
   const [textContent, setTextContent] = useState('');
@@ -362,10 +416,25 @@ export default function FileEditorPage() {
       const workbook = workbookRef.current;
       if (!collab || !workbook || documentTypeRef.current !== 'excel') return;
       const data = workbookToPersistedSheets(workbook.save());
-      const dataStr = JSON.stringify(data);
-      if (dataStr === lastDataRef.current) return;
-      collab.getMap('excel').set('snapshot', {
-        data,
+      const previous = lastExcelSnapshotRef.current;
+      if (!previous) {
+        lastExcelSnapshotRef.current = data;
+        return;
+      }
+      const patch = buildExcelPatch(previous, data);
+      if (!patch) {
+        lastExcelSnapshotRef.current = data;
+        collab.getMap('excel').set('snapshot', {
+          data,
+          clientId: collab.getClientId(),
+          updatedAt: Date.now(),
+        });
+        return;
+      }
+      lastExcelSnapshotRef.current = data;
+      if (patch.changes.length === 0) return;
+      collab.getMap('excel').set('patch', {
+        patch,
         clientId: collab.getClientId(),
         updatedAt: Date.now(),
       });
@@ -396,34 +465,128 @@ export default function FileEditorPage() {
     } catch { /* awareness is still connecting */ }
   };
 
+  const sameExcelLock = (left: ExcelLockTarget | null, right: ExcelLockTarget) => Boolean(
+    left && left.sheetId === right.sheetId && left.row === right.row && left.column === right.column,
+  );
+
+  const releaseExcelLock = () => {
+    const lock = localExcelLockRef.current;
+    if (!lock) return;
+    localExcelLockRef.current = null;
+    localExcelLockGrantedRef.current = false;
+    if (excelLockRenewTimerRef.current) {
+      clearTimeout(excelLockRenewTimerRef.current);
+      excelLockRenewTimerRef.current = null;
+    }
+    setLocalExcelLock(null);
+    const currentFileId = fileIdRef.current;
+    if (!currentFileId) return;
+    void authFetch(`/api/files/${currentFileId}/excel-locks/release`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(lock),
+    });
+  };
+
+  const acquireExcelLock = (lock: ExcelLockTarget) => {
+    if (sameExcelLock(localExcelLockRef.current, lock)) return;
+    releaseExcelLock();
+    localExcelLockRef.current = lock;
+    localExcelLockGrantedRef.current = false;
+    const currentFileId = fileIdRef.current;
+    if (!currentFileId) return;
+
+    void authFetch(`/api/files/${currentFileId}/excel-locks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(lock),
+    }).then(async (response) => {
+      if (!response.ok) throw new Error('锁定请求失败');
+      return response.json() as Promise<{ acquired: boolean; ownerUsername?: string }>;
+    }).then((result) => {
+      if (!sameExcelLock(localExcelLockRef.current, lock)) {
+        if (result.acquired) {
+          void authFetch(`/api/files/${currentFileId}/excel-locks/release`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(lock),
+          });
+        }
+        return;
+      }
+      if (!result.acquired) {
+        localExcelLockRef.current = null;
+        setExcelLockHint(`${result.ownerUsername || '其他用户'}正在编辑 ${columnToName(lock.column)}${lock.row + 1}`);
+        window.setTimeout(() => setExcelLockHint(''), 3000);
+        return;
+      }
+      localExcelLockGrantedRef.current = true;
+      setLocalExcelLock(lock);
+      const renew = () => {
+        if (!sameExcelLock(localExcelLockRef.current, lock)) return;
+        void authFetch(`/api/files/${currentFileId}/excel-locks`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(lock),
+        }).then((response) => response.ok ? response.json() as Promise<{ acquired: boolean }> : { acquired: false })
+          .then((renewed) => {
+            if (!renewed.acquired && sameExcelLock(localExcelLockRef.current, lock)) {
+              releaseExcelLock();
+              return;
+            }
+            if (sameExcelLock(localExcelLockRef.current, lock)) {
+              excelLockRenewTimerRef.current = setTimeout(renew, 20_000);
+            }
+          });
+      };
+      excelLockRenewTimerRef.current = setTimeout(renew, 20_000);
+    }).catch(() => {
+      if (sameExcelLock(localExcelLockRef.current, lock)) {
+        localExcelLockRef.current = null;
+        setExcelLockHint('无法确认单元格锁定，请稍后重试');
+      }
+    });
+  };
+
   const applyRemoteExcelSnapshot = (snapshot: IWorkbookData) => {
     const univerAPI = univerRef.current?.univerAPI;
     const currentWorkbook = workbookRef.current?.save();
     const workbook = univerAPI?.getActiveWorkbook();
     if (!univerAPI || !currentWorkbook || !workbook) return false;
 
-    const currentSheetIds = currentWorkbook.sheetOrder;
-    if (
-      currentSheetIds.length !== snapshot.sheetOrder.length
-      || currentSheetIds.some((sheetId, index) => sheetId !== snapshot.sheetOrder[index])
-    ) {
-      // Sheet creation, deletion, and reordering are not cell-data updates.
-      // Keep the current workbook mounted instead of replacing the entire component.
-      return false;
-    }
-
     isApplyingRemoteExcelRef.current = true;
     try {
+      const expectedSheetIds = new Set(snapshot.sheetOrder);
+      const currentSheetIds = new Set(currentWorkbook.sheetOrder);
+      // Structural changes operate on individual sheets, preserving the mounted
+      // Univer instance and everything outside the changed sheet.
+      for (const sheetId of snapshot.sheetOrder) {
+        if (currentSheetIds.has(sheetId)) continue;
+        const sheet = snapshot.sheets[sheetId];
+        if (!sheet) return false;
+        workbook.create(
+          sheet.name || `Sheet${workbook.getSheets().length + 1}`,
+          sheet.rowCount || 100,
+          sheet.columnCount || 26,
+          { index: snapshot.sheetOrder.indexOf(sheetId), sheet },
+        );
+      }
+      for (const worksheet of workbook.getSheets()) {
+        if (!expectedSheetIds.has(worksheet.getSheetId())) {
+          workbook.deleteSheet(worksheet);
+        }
+      }
+
       for (const sheetId of snapshot.sheetOrder) {
         const worksheet = workbook.getSheets().find((sheet) => sheet.getSheetId() === sheetId);
-        const previousSheet = currentWorkbook.sheets[sheetId];
+        const previousSheet = currentWorkbook.sheets[sheetId] || {};
         const nextSheet = snapshot.sheets[sheetId];
-        if (!worksheet || !previousSheet || !nextSheet) return false;
+        if (!worksheet || !nextSheet) return false;
 
-        if (nextSheet.rowCount && nextSheet.rowCount > (previousSheet.rowCount || 0)) {
+        if (nextSheet.name && worksheet.getSheetName() !== nextSheet.name) {
+          worksheet.setName(nextSheet.name);
+        }
+
+        if (nextSheet.rowCount && nextSheet.rowCount !== previousSheet.rowCount) {
           worksheet.setRowCount(nextSheet.rowCount);
         }
-        if (nextSheet.columnCount && nextSheet.columnCount > (previousSheet.columnCount || 0)) {
+        if (nextSheet.columnCount && nextSheet.columnCount !== previousSheet.columnCount) {
           worksheet.setColumnCount(nextSheet.columnCount);
         }
 
@@ -447,6 +610,39 @@ export default function FileEditorPage() {
           worksheet.getRange(row, column, 1, 1).setValues([[nextCell || null]]);
         }
       }
+      return true;
+    } finally {
+      window.setTimeout(() => {
+        isApplyingRemoteExcelRef.current = false;
+      }, 0);
+    }
+  };
+
+  const applyRemoteExcelPatch = (patch: ExcelPatch) => {
+    const workbook = univerRef.current?.univerAPI.getActiveWorkbook();
+    if (!workbook) return false;
+
+    isApplyingRemoteExcelRef.current = true;
+    try {
+      for (const dimension of patch.dimensions) {
+        const worksheet = workbook.getSheets().find((sheet) => sheet.getSheetId() === dimension.sheetId);
+        if (!worksheet) return false;
+        const currentSheet = lastExcelSnapshotRef.current?.sheets[dimension.sheetId];
+        if (dimension.rowCount && dimension.rowCount !== currentSheet?.rowCount) {
+          worksheet.setRowCount(dimension.rowCount);
+        }
+        if (dimension.columnCount && dimension.columnCount !== currentSheet?.columnCount) {
+          worksheet.setColumnCount(dimension.columnCount);
+        }
+      }
+      for (const change of patch.changes) {
+        const worksheet = workbook.getSheets().find((sheet) => sheet.getSheetId() === change.sheetId);
+        if (!worksheet) return false;
+        worksheet.getRange(change.row, change.column, 1, 1).setValues([[change.value as never]]);
+      }
+      const snapshot = workbookToPersistedSheets(workbookRef.current!.save());
+      lastExcelSnapshotRef.current = snapshot;
+      lastDataRef.current = JSON.stringify(snapshot);
       return true;
     } finally {
       window.setTimeout(() => {
@@ -621,6 +817,7 @@ export default function FileEditorPage() {
       textYjsInitializedRef.current = false;
       textYjsCleanupRef.current?.();
       canvasEditorCleanupRef.current?.();
+      releaseExcelLock();
       collab.disconnect();
       collabRef.current = null;
       setExcelLocks([]);
@@ -649,8 +846,25 @@ export default function FileEditorPage() {
     const collab = collabRef.current;
     if (!collab) return;
 
-    const excelMap = collab.getMap<{ data?: unknown; clientId?: number; updatedAt?: number }>('excel');
-    const handleExcelUpdate = () => {
+    const excelMap = collab.getMap<{
+      data?: unknown;
+      patch?: ExcelPatch;
+      clientId?: number;
+      updatedAt?: number;
+    }>('excel');
+    const handleExcelUpdate = (event: { keys: Map<string, unknown> }) => {
+      const remotePatch = excelMap.get('patch');
+      if (event.keys.has('patch') && remotePatch?.patch && remotePatch.clientId !== collab.getClientId()) {
+        if (!applyRemoteExcelPatch(remotePatch.patch)) {
+          // The editor is still mounting; the saved document remains the source
+          // of truth until an editable workbook is available.
+          pendingRemoteExcelSnapshotRef.current = null;
+        }
+        setSaveStatus('saved');
+        clearSaveStatus();
+        return;
+      }
+      if (!event.keys.has('snapshot')) return;
       const remoteSnapshot = excelMap.get('snapshot');
       if (!remoteSnapshot?.data) return;
       if (remoteSnapshot.clientId === collab.getClientId()) return;
@@ -665,6 +879,8 @@ export default function FileEditorPage() {
       lastDataRef.current = dataStr;
       if (!applyRemoteExcelSnapshot(snapshot)) {
         pendingRemoteExcelSnapshotRef.current = snapshot;
+      } else {
+        lastExcelSnapshotRef.current = snapshot;
       }
       setSaveStatus('saved');
       clearSaveStatus();
@@ -880,6 +1096,7 @@ export default function FileEditorPage() {
         `file-${fileId}`,
       );
       lastDataRef.current = JSON.stringify(snapshot);
+      lastExcelSnapshotRef.current = snapshot;
 
       const univerHandle = createUniver({
         locale: LocaleType.ZH_CN,
@@ -903,6 +1120,7 @@ export default function FileEditorPage() {
       workbookRef.current = workbook;
       if (pendingRemoteExcelSnapshotRef.current) {
         applyRemoteExcelSnapshot(pendingRemoteExcelSnapshotRef.current);
+        lastExcelSnapshotRef.current = pendingRemoteExcelSnapshotRef.current;
         pendingRemoteExcelSnapshotRef.current = null;
       }
 
@@ -931,14 +1149,25 @@ export default function FileEditorPage() {
             params.cancel = true;
             return;
           }
-          setLocalExcelLock({ sheetId, row: params.row, column: params.column });
+          acquireExcelLock({ sheetId, row: params.row, column: params.column });
+        },
+      );
+      const beforeSheetEditEnd = univerHandle.univerAPI.addEvent(
+        univerHandle.univerAPI.Event.BeforeSheetEditEnd,
+        (params) => {
+          if (!localExcelLockGrantedRef.current) {
+            params.cancel = true;
+            setExcelLockHint('正在确认该单元格的编辑锁…');
+          }
         },
       );
       const sheetEditEnded = univerHandle.univerAPI.addEvent(
         univerHandle.univerAPI.Event.SheetEditEnded,
-        () => setLocalExcelLock(null),
+        () => releaseExcelLock(),
       );
-      univerDisposablesRef.current = [selectionChanged, commandExecuted, beforeSheetEditStart, sheetEditEnded];
+      univerDisposablesRef.current = [
+        selectionChanged, commandExecuted, beforeSheetEditStart, beforeSheetEditEnd, sheetEditEnded,
+      ];
     } catch (err) {
       console.error('Failed to initialize Univer:', err);
       setEditorError(err instanceof Error ? err.message : '编辑器初始化失败');
@@ -949,7 +1178,7 @@ export default function FileEditorPage() {
     return () => {
       univerDisposablesRef.current.forEach((item) => item.dispose());
       univerDisposablesRef.current = [];
-      setLocalExcelLock(null);
+      releaseExcelLock();
       workbookRef.current = null;
       canvasEditorCleanupRef.current?.();
       canvasEditorCleanupRef.current = null;
@@ -1188,6 +1417,9 @@ export default function FileEditorPage() {
               <span className="excel-lock-status">
                 {activeExcelLock.username} 正在编辑 {columnToName(activeExcelLock.column)}{activeExcelLock.row + 1}
               </span>
+            )}
+            {!activeExcelLock && excelLockHint && (
+              <span className="excel-lock-status">{excelLockHint}</span>
             )}
           </div>
           <div className="toolbar-right">
